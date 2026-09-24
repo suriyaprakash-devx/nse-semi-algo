@@ -1,5 +1,5 @@
 {
-  "name": "nse-upstox-scanner-frontend",
+  "name": "nse-semi-algo-scanner-frontend",
   "private": true,
   "version": "1.0.0",
   "type": "module",

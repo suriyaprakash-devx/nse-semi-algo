@@ -6,26 +6,35 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Upstox Direct Access Token or OAuth
-    UPSTOX_ACCESS_TOKEN: Optional[str] = None
-    UPSTOX_CLIENT_ID: Optional[str] = None
-    UPSTOX_CLIENT_SECRET: Optional[str] = None
-    UPSTOX_REDIRECT_URI: str = "http://localhost:8000/api/auth/callback"
+    # Application & Environment
+    SECRET_KEY: str = "nse_semi_algo_secret_key_32bytes_minimum!"
+    FRONTEND_URL: str = "http://localhost:5173"
+    ENVIRONMENT: str = "development"
 
     # Database
     DATABASE_URL: Optional[str] = None
     DELETE_RESULTS_AFTER_SCAN: bool = False
 
-    # Security & Frontend
-    SECRET_KEY: str = "upstox_semi_algo_secret_encryption_key_32bytes!"
-    FRONTEND_URL: str = "http://localhost:5173"
-    ENVIRONMENT: str = "development"
+    # Scanner Strategy Configuration
+    SCAN_INTERVAL_MINUTES: int = 10
+    DEFAULT_TIMEFRAME: str = "10m"  # 5m, 10m, 15m
+    DEFAULT_VOLUME_MULTIPLIER: float = 1.5
+    DEFAULT_VOLUME_LOOKBACK: int = 20
+    DEFAULT_RISK_REWARD: float = 2.0  # 1.5, 2.0, 3.0
+    MAX_STOCKS: int = 200
+    MAX_WORKERS: int = 5
 
-    # Scanner Settings
-    TIMEFRAME: str = "10minute"
-    INTRADAY_LOOKBACK_DAYS: int = 8  # Sufficient 1-minute candles to produce 200+ 10-minute candles
-    MAX_CONCURRENT_REQUESTS: int = 10
-    REQUESTS_PER_SECOND_LIMIT: int = 15
+    # Lookback & Cache settings
+    LOOKBACK_DAYS_INTRADAY: str = "7d"
+    LOOKBACK_DAYS_DAILY: str = "60d"
+    CACHE_TTL_SECONDS: int = 120
+
+    # Optional Telegram Alerts
+    TELEGRAM_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_CHAT_ID: Optional[str] = None
+
+    # Benchmark ticker
+    BENCHMARK_TICKER: str = "^NSEI"
 
     # Storage paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent

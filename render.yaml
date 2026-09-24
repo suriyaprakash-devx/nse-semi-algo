@@ -12,14 +12,6 @@ services:
         fromDatabase:
           name: nse-scanner-postgres
           property: connectionString
-      - key: UPSTOX_ACCESS_TOKEN
-        sync: false
-      - key: UPSTOX_CLIENT_ID
-        sync: false
-      - key: UPSTOX_CLIENT_SECRET
-        sync: false
-      - key: UPSTOX_REDIRECT_URI
-        sync: false
       - key: FRONTEND_URL
         sync: false
       - key: SECRET_KEY
@@ -28,6 +20,24 @@ services:
         value: production
       - key: DELETE_RESULTS_AFTER_SCAN
         value: "false"
+      - key: SCAN_INTERVAL_MINUTES
+        value: "10"
+      - key: DEFAULT_TIMEFRAME
+        value: "10m"
+      - key: DEFAULT_VOLUME_MULTIPLIER
+        value: "1.5"
+      - key: DEFAULT_VOLUME_LOOKBACK
+        value: "20"
+      - key: DEFAULT_RISK_REWARD
+        value: "2.0"
+      - key: MAX_STOCKS
+        value: "200"
+      - key: MAX_WORKERS
+        value: "5"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
 
   # 2. React + Vite Frontend Static Site
   - type: static
@@ -42,7 +52,7 @@ services:
         destination: /index.html
 
 databases:
-  # 3. PostgreSQL Managed Database
+  # 3. PostgreSQL Managed Database on Render
   - name: nse-scanner-postgres
     region: oregon
     plan: standard

@@ -3,7 +3,7 @@ from typing import Generator
 from sqlalchemy import create_engine, desc
 from sqlalchemy.orm import sessionmaker, Session
 from backend.config import settings
-from backend.models import Base, ScanRun, ScanResult, OAuthSession
+from backend.models import Base, ScanRun, ScanResult, Signal
 
 logger = logging.getLogger("scanner.database")
 
@@ -20,7 +20,7 @@ def get_engine():
         pool_pre_ping=True,
         pool_size=5,
         max_overflow=10,
-        connect_args={"connect_timeout": 5},
+        connect_args={"connect_timeout": 10},
         echo=False
     )
 
@@ -44,13 +44,11 @@ def get_db() -> Generator[Session, None, None]:
     finally:
         db.close()
 
-def cleanup_old_scans(db: Session, keep_latest: int = 1):
+def cleanup_old_scans(db: Session, keep_latest: int = 5):
     """
-    Cleanup policy: Keeps the latest scan(s) and purges older scan runs
-    and associated temporary results to prevent database accumulation.
+    Cleans up older scan runs and associated results, keeping the latest N runs.
     """
     try:
-        # Get IDs of latest scans to keep
         recent_scan_ids = [
             run.id for run in db.query(ScanRun.id)
             .filter(ScanRun.status.in_(["COMPLETED", "RUNNING"]))
@@ -60,7 +58,6 @@ def cleanup_old_scans(db: Session, keep_latest: int = 1):
         ]
 
         if recent_scan_ids:
-            # Delete runs that are not in the recent list
             deleted = db.query(ScanRun).filter(~ScanRun.id.in_(recent_scan_ids)).delete(synchronize_session=False)
             db.commit()
             if deleted > 0:

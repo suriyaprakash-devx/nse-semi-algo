@@ -2,36 +2,49 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-import pandas as pd
+import pytz
 from sqlalchemy.orm import Session
+
 from backend.config import settings
 from backend.models import ScanRun, ScanResult
 from backend.database import SessionLocal, cleanup_old_scans
 from backend.universe import universe_manager
-from backend.upstox_client import upstox_api, UpstoxAuthExpiredException
+from backend.market_data import market_data_api
+from backend.strategy import evaluate_stock_strategy
+from backend.ranking import rank_stocks
+from backend.alerts import alert_manager
 
-logger = logging.getLogger("scanner.engine")
+logger = logging.getLogger("scanner.orchestrator")
+KOLKATA_TZ = pytz.timezone("Asia/Kolkata")
 
 class ScannerState:
-    """Holds real-time scanner state for the frontend to monitor."""
+    """Holds real-time scanner state and metrics for the frontend."""
     def __init__(self):
         self.is_running: bool = False
         self.should_stop: bool = False
         self.stage: str = "Idle"
+        self.timeframe: str = settings.DEFAULT_TIMEFRAME
+        self.risk_reward: float = settings.DEFAULT_RISK_REWARD
+        self.volume_multiplier: float = settings.DEFAULT_VOLUME_MULTIPLIER
+        self.stocks_selected: int = 200
         self.stocks_scanned: int = 0
-        self.total_stocks: int = 0
-        self.signals_found: int = 0
+        self.total_stocks: int = 200
+        self.buy_count: int = 0
+        self.sell_count: int = 0
+        self.watch_count: int = 0
+        self.no_signal_count: int = 0
         self.progress_pct: float = 0.0
         self.current_stock: str = ""
         self.error_message: Optional[str] = None
         self.started_at: Optional[datetime] = None
         self.completed_at: Optional[datetime] = None
+        self.last_scan_ist: Optional[str] = None
         self.logs: List[str] = []
         self.latest_results: List[Dict[str, Any]] = []
 
     def log(self, message: str):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        entry = f"[{timestamp}] {message}"
+        now_ist = datetime.now(KOLKATA_TZ).strftime("%H:%M:%S")
+        entry = f"[{now_ist} IST] {message}"
         self.logs.append(entry)
         if len(self.logs) > 100:
             self.logs.pop(0)
@@ -41,160 +54,73 @@ class ScannerState:
         return {
             "is_running": self.is_running,
             "stage": self.stage,
+            "timeframe": self.timeframe,
+            "risk_reward": self.risk_reward,
+            "volume_multiplier": self.volume_multiplier,
+            "stocks_selected": self.stocks_selected,
             "stocks_scanned": self.stocks_scanned,
             "total_stocks": self.total_stocks,
-            "signals_found": self.signals_found,
+            "buy_count": self.buy_count,
+            "sell_count": self.sell_count,
+            "watch_count": self.watch_count,
+            "no_signal_count": self.no_signal_count,
             "progress_pct": round(self.progress_pct, 1),
             "current_stock": self.current_stock,
             "error_message": self.error_message,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "logs": self.logs[-20:],
+            "last_scan_ist": self.last_scan_ist,
+            "logs": self.logs[-25:],
             "results_count": len(self.latest_results)
         }
 
 scanner_state = ScannerState()
 
-def detect_crossover(candles: List[Dict[str, Any]], symbol: str, company: str) -> Optional[Dict[str, Any]]:
+async def execute_scanner(
+    timeframe: Optional[str] = None,
+    risk_reward: Optional[float] = None,
+    volume_multiplier: Optional[float] = None
+):
     """
-    Given completed daily candles:
-    1. Verifies sufficiency of data (minimum 31 completed candles for SMA 30 + 1 prev comparison).
-    2. Calculates SMA 6 and SMA 30 on Close prices.
-    3. Detects confirmed crossovers:
-       - Bullish: prev candle SMA6 <= SMA30, current candle SMA6 > SMA30. Signal: BULLISH
-       - Bearish: prev candle SMA6 >= SMA30, current candle SMA6 < SMA30. Signal: BEARISH
-    4. Identifies the most recent crossover event.
+    Main semi-algo scanner execution:
+    1. Loads ~200 NSE stock universe.
+    2. Downloads NIFTY 50 (^NSEI) benchmark candles.
+    3. Downloads Daily candles for daily trend alignment (SMA6 vs SMA30).
+    4. Downloads Intraday completed candles for selected timeframe (5m, 10m, 15m).
+    5. Evaluates SMA 6/30 crossover, momentum, volume, price action confirmation.
+    6. Identifies BUY, SELL, WATCH, or NO SIGNAL.
+    7. Calculates deterministic analytical Entry, SL, Target.
+    8. Dispatches analytical alerts for new setups.
+    9. Transparently ranks all 200 stocks.
+    10. Persists run and results to database.
     """
-    if len(candles) < 31:
-        return None
+    tf = timeframe or settings.DEFAULT_TIMEFRAME
+    rr = risk_reward or settings.DEFAULT_RISK_REWARD
+    vm = volume_multiplier or settings.DEFAULT_VOLUME_MULTIPLIER
 
-    # Sort ascending by timestamp
-    df = pd.DataFrame(candles)
-    # Parse timestamp
-    df["dt"] = pd.to_datetime(df["timestamp"])
-    df = df.sort_values(by="dt", ascending=True).reset_index(drop=True)
-
-    # Note: Currently forming incomplete candles are already excluded at the data client level (upstox_client.py).
-    # The last candle in df is the exact most recently closed completed candle.
-    if len(df) < 31:
-        return None
-
-    # Calculate SMA 6 and SMA 30
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
-    df["sma6"] = df["close"].rolling(window=6).mean()
-    df["sma30"] = df["close"].rolling(window=30).mean()
-
-    # Drop rows where SMA 30 is NaN
-    valid_df = df.dropna(subset=["sma6", "sma30"]).reset_index(drop=True)
-    if len(valid_df) < 2:
-        return None
-
-    # Search for all crossover events chronologically to find the most recent
-    crossovers = []
-    for i in range(1, len(valid_df)):
-        prev_sma6 = valid_df["sma6"].iloc[i - 1]
-        prev_sma30 = valid_df["sma30"].iloc[i - 1]
-        curr_sma6 = valid_df["sma6"].iloc[i]
-        curr_sma30 = valid_df["sma30"].iloc[i]
-        curr_close = valid_df["close"].iloc[i]
-        crossover_dt = valid_df["dt"].iloc[i]
-        if crossover_dt.hour == 0 and crossover_dt.minute == 0:
-            crossover_date_str = str(crossover_dt.strftime("%Y-%m-%d"))
-        else:
-            crossover_date_str = str(crossover_dt.strftime("%Y-%m-%d %H:%M"))
-
-        # Bullish crossover
-        if prev_sma6 <= prev_sma30 and curr_sma6 > curr_sma30:
-            crossovers.append({
-                "symbol": symbol,
-                "company": company,
-                "signal_type": "BULLISH",
-                "crossover_date": crossover_date_str,
-                "close": round(curr_close, 2),
-                "sma6": round(curr_sma6, 2),
-                "sma30": round(curr_sma30, 2),
-            })
-        # Bearish crossover
-        elif prev_sma6 >= prev_sma30 and curr_sma6 < curr_sma30:
-            crossovers.append({
-                "symbol": symbol,
-                "company": company,
-                "signal_type": "BEARISH",
-                "crossover_date": crossover_date_str,
-                "close": round(curr_close, 2),
-                "sma6": round(curr_sma6, 2),
-                "sma30": round(curr_sma30, 2),
-            })
-
-    # Return the most recent crossover for this stock
-    if crossovers:
-        return crossovers[-1]
-    return None
-
-def build_ranked_dataframe(signals: List[Dict[str, Any]]) -> pd.DataFrame:
-    """
-    Ranks signals:
-    1. Sorts by crossover_date DESC (most recent first).
-    2. Assigns Rank 1, 2, 3...
-    3. Returns exact columns:
-       Rank, Symbol, Company, Signal Type, Crossover Date, Close, SMA 6, SMA 30
-    """
-    if not signals:
-        return pd.DataFrame(columns=[
-            "Rank", "Symbol", "Company", "Signal Type", "Crossover Date", "Close", "SMA 6", "SMA 30"
-        ])
-
-    df = pd.DataFrame(signals)
-    # Sort by crossover_date DESC, secondary sort by Symbol
-    df = df.sort_values(by=["crossover_date", "symbol"], ascending=[False, True]).reset_index(drop=True)
-    df.insert(0, "Rank", range(1, len(df) + 1))
-
-    # Rename & order exact required columns
-    df = df.rename(columns={
-        "symbol": "Symbol",
-        "company": "Company",
-        "signal_type": "Signal Type",
-        "crossover_date": "Crossover Date",
-        "close": "Close",
-        "sma6": "SMA 6",
-        "sma30": "SMA 30"
-    })
-
-    # Format numeric columns to 2 decimal places
-    df["Close"] = df["Close"].apply(lambda x: f"{float(x):.2f}")
-    df["SMA 6"] = df["SMA 6"].apply(lambda x: f"{float(x):.2f}")
-    df["SMA 30"] = df["SMA 30"].apply(lambda x: f"{float(x):.2f}")
-
-    return df[["Rank", "Symbol", "Company", "Signal Type", "Crossover Date", "Close", "SMA 6", "SMA 30"]]
-
-async def execute_scanner(access_token: Optional[str] = None):
-    """
-    Main scanner execution loop:
-    1. Verify Upstox authentication
-    2. Load NIFTY 100 + NIFTY 200 universe
-    3. Load Upstox instrument master
-    4. Map symbols -> instrument_key
-    5. Fetch historical daily candles
-    6. Calculate SMA 6 and SMA 30
-    7. Detect confirmed crossovers
-    8. Find latest crossover per stock
-    9. Rank by latest crossover date
-    10. Save scan results to DB
-    11. Return results
-    """
     scanner_state.is_running = True
     scanner_state.should_stop = False
     scanner_state.error_message = None
+    scanner_state.timeframe = tf
+    scanner_state.risk_reward = rr
+    scanner_state.volume_multiplier = vm
     scanner_state.started_at = datetime.now(timezone.utc)
     scanner_state.completed_at = None
     scanner_state.stocks_scanned = 0
-    scanner_state.signals_found = 0
+    scanner_state.buy_count = 0
+    scanner_state.sell_count = 0
+    scanner_state.watch_count = 0
+    scanner_state.no_signal_count = 0
     scanner_state.progress_pct = 0.0
+    scanner_state.current_stock = ""
     scanner_state.logs.clear()
 
     db: Session = SessionLocal()
     scan_run = ScanRun(
         started_at=datetime.now(timezone.utc),
+        timeframe=tf,
+        stocks_selected=200,
+        stocks_scanned=0,
         status="RUNNING"
     )
     db.add(scan_run)
@@ -202,109 +128,217 @@ async def execute_scanner(access_token: Optional[str] = None):
     db.refresh(scan_run)
 
     try:
-        # Step 1: Universe & Instruments
-        scanner_state.stage = "Loading stock universe & Upstox instruments..."
-        scanner_state.log("Loading NIFTY 100 + NIFTY 200 universe...")
-        universe = await universe_manager.get_universe()
+        # Step 1: Universe
+        scanner_state.stage = "Loading stock universe..."
+        scanner_state.log("Loading ~200 NSE liquid active stock universe...")
+        universe = universe_manager.get_universe()
 
         if not universe:
-            raise RuntimeError("Failed to load stock universe or instrument mapping.")
+            raise RuntimeError("Failed to load stock universe.")
 
         scanner_state.total_stocks = len(universe)
-        scanner_state.log(f"Ready to scan {len(universe)} NSE equity stocks.")
+        scanner_state.stocks_selected = len(universe)
+        scan_run.stocks_selected = len(universe)
+        db.commit()
 
-        # Step 2: Scan stocks
-        signals: List[Dict[str, Any]] = []
+        scanner_state.log(f"Stocks Selected: {len(universe)} NSE equities (Timeframe: {tf}, R:R: 1:{rr:g}, Vol: {vm}x).")
 
-        async def process_stock(stock: Dict[str, Any]):
+        # Step 2: Benchmark Data
+        scanner_state.stage = "Preparing NIFTY benchmark..."
+        scanner_state.log("Downloading NIFTY 50 (^NSEI) benchmark for Relative Strength...")
+        benchmark_candles = await market_data_api.fetch_benchmark_data(timeframe=tf)
+
+        # Step 3: Batch Daily Candles for Daily Trend
+        scanner_state.stage = "Preparing daily trend data..."
+        scanner_state.log("Downloading daily candles for daily trend filter...")
+        symbols = [item["symbol"] for item in universe]
+        daily_candles_map = await market_data_api.fetch_batch_candles(
+            symbols,
+            period=settings.LOOKBACK_DAYS_DAILY,
+            interval="1d",
+            chunk_size=30
+        )
+
+        # Step 4: Batch Intraday Scanning
+        scanner_state.stage = "Preparing Yahoo Finance data..."
+        scanner_state.log(f"Fetching intraday completed candles for timeframe {tf}...")
+
+        chunk_size = 25
+        chunks = [universe[i:i + chunk_size] for i in range(0, len(universe), chunk_size)]
+        raw_results: List[Dict[str, Any]] = []
+
+        for chunk_idx, chunk in enumerate(chunks, start=1):
             if scanner_state.should_stop:
-                return
+                scanner_state.log("Scan stopped by user.")
+                break
 
-            symbol = stock["symbol"]
-            company = stock["company"]
-            inst_key = stock["instrument_key"]
-            scanner_state.current_stock = symbol
+            chunk_symbols = [s["symbol"] for s in chunk]
+            scanner_state.stage = f"Scanning {scanner_state.stocks_scanned} / {scanner_state.total_stocks}"
 
-            try:
-                candles = await upstox_api.fetch_10min_candles(
-                    instrument_key=inst_key,
-                    access_token=access_token,
-                    lookback_days=settings.INTRADAY_LOOKBACK_DAYS
-                )
-                if candles:
-                    signal = detect_crossover(candles, symbol, company)
-                    if signal:
-                        signals.append(signal)
-                        scanner_state.signals_found = len(signals)
-                        scanner_state.log(
-                            f"Signal found: {symbol} - {signal['signal_type']} (Crossed on {signal['crossover_date']})"
-                        )
-            except UpstoxAuthExpiredException:
-                scanner_state.error_message = "Upstox authentication expired. Please reconnect your Upstox account."
-                scanner_state.log(scanner_state.error_message)
-                scanner_state.should_stop = True
-                raise
-            except Exception as e:
-                scanner_state.log(f"Unable to retrieve historical data for {symbol}. Skipping: {e}")
-            finally:
+            intraday_candles_map = await market_data_api.fetch_batch_candles(
+                chunk_symbols,
+                period=settings.LOOKBACK_DAYS_INTRADAY,
+                interval=tf,
+                chunk_size=chunk_size
+            )
+
+            for stock in chunk:
+                if scanner_state.should_stop:
+                    break
+
+                symbol = stock["symbol"]
+                company = stock["company"]
+                scanner_state.current_stock = symbol
+
+                candles = intraday_candles_map.get(symbol, [])
+                daily_c = daily_candles_map.get(symbol, [])
+
+                if not candles or len(candles) < 31:
+                    scanner_state.log(f"Insufficient {tf} historical candles for {symbol}. Skipping stock.")
+                    result = {
+                        "symbol": symbol,
+                        "company": company,
+                        "status": "NO SIGNAL",
+                        "potential_direction": None,
+                        "current_price": 0.0,
+                        "day_change_percent": 0.0,
+                        "entry": None,
+                        "stop_loss": None,
+                        "target": None,
+                        "risk_reward": f"1:{rr:g}",
+                        "signal_strength": 0,
+                        "sma6": 0.0,
+                        "sma30": 0.0,
+                        "volume": 0,
+                        "average_volume": 0.0,
+                        "volume_ratio": 1.0,
+                        "momentum_percent": 0.0,
+                        "daily_trend": "NEUTRAL",
+                        "intraday_trend": "NEUTRAL",
+                        "relative_strength": 0.0,
+                        "crossover_time": None,
+                        "signal_time": "",
+                        "reason": f"Insufficient {tf} data from market feed.",
+                        "contributing_factors": []
+                    }
+                else:
+                    result = evaluate_stock_strategy(
+                        candles=candles,
+                        symbol=symbol,
+                        company=company,
+                        daily_candles=daily_c,
+                        benchmark_candles=benchmark_candles,
+                        volume_multiplier=vm,
+                        risk_reward_ratio=rr,
+                        timeframe=tf
+                    )
+
+                raw_results.append(result)
+
+                # Update live counts
+                if result["status"] == "BUY":
+                    scanner_state.buy_count += 1
+                    scanner_state.log(
+                        f"🚨 BUY SIGNAL: {symbol} @ ₹{result['current_price']} "
+                        f"(Entry ₹{result['entry']}, SL ₹{result['stop_loss']}, Target ₹{result['target']}, Score {result['signal_strength']}/100)"
+                    )
+                    await alert_manager.dispatch_alert(db, {**result, "timeframe": tf})
+
+                elif result["status"] == "SELL":
+                    scanner_state.sell_count += 1
+                    scanner_state.log(
+                        f"🚨 SELL SIGNAL: {symbol} @ ₹{result['current_price']} "
+                        f"(Entry ₹{result['entry']}, SL ₹{result['stop_loss']}, Target ₹{result['target']}, Score {result['signal_strength']}/100)"
+                    )
+                    await alert_manager.dispatch_alert(db, {**result, "timeframe": tf})
+
+                elif result["status"] == "WATCH":
+                    scanner_state.watch_count += 1
+                    scanner_state.log(
+                        f"👀 WATCH SETUP ({result['potential_direction']}): {symbol} - {result['reason']}"
+                    )
+                    await alert_manager.dispatch_alert(db, {**result, "timeframe": tf})
+
+                else:
+                    scanner_state.no_signal_count += 1
+
                 scanner_state.stocks_scanned += 1
                 if scanner_state.total_stocks > 0:
                     scanner_state.progress_pct = (scanner_state.stocks_scanned / scanner_state.total_stocks) * 100
-                if scanner_state.stocks_scanned % 25 == 0 or scanner_state.stocks_scanned == scanner_state.total_stocks:
-                    scanner_state.log(f"Scanning {scanner_state.stocks_scanned} / {scanner_state.total_stocks}")
 
-        # Run stock requests concurrently using worker tasks with rate control
-        tasks = [process_stock(stock) for stock in universe]
-        # Execute in gathered chunks or concurrently
-        await asyncio.gather(*tasks, return_exceptions=True)
+                # Yield control briefly to ensure responsive event loop
+                await asyncio.sleep(0.005)
 
-        if scanner_state.should_stop and scanner_state.error_message:
-            scan_run.status = "FAILED"
-            scan_run.error_message = scanner_state.error_message
+        if scanner_state.should_stop:
+            scan_run.status = "STOPPED"
+            scan_run.stocks_scanned = scanner_state.stocks_scanned
             db.commit()
+            scanner_state.stage = "Stopped"
+            scanner_state.log("Scan execution stopped.")
             return
 
-        # Step 3: Ranking
-        scanner_state.stage = "Ranking detected signals..."
-        scanner_state.log("Ranking signals by most recent crossover date...")
+        # Step 5: Ranking
+        scanner_state.stage = "Ranking 200 stocks..."
+        scanner_state.log("Ranking stocks by confirmed setups, signal strength, recency, and volume...")
+        ranked_results = rank_stocks(raw_results)
+        scanner_state.latest_results = ranked_results
 
-        df_ranked = build_ranked_dataframe(signals)
-        results_records = df_ranked.to_dict(orient="records")
-        scanner_state.latest_results = results_records
-
-        # Step 4: Save to Database
-        scan_run.completed_at = datetime.now(timezone.utc)
+        # Step 6: Save Run and Results to Database
+        now_utc = datetime.now(timezone.utc)
+        scan_run.completed_at = now_utc
         scan_run.stocks_scanned = scanner_state.stocks_scanned
-        scan_run.signals_found = len(results_records)
+        scan_run.buy_count = scanner_state.buy_count
+        scan_run.sell_count = scanner_state.sell_count
+        scan_run.watch_count = scanner_state.watch_count
+        scan_run.no_signal_count = scanner_state.no_signal_count
         scan_run.status = "COMPLETED"
 
-        for row in results_records:
-            result_entry = ScanResult(
+        for item in ranked_results:
+            db_res = ScanResult(
                 scan_id=scan_run.id,
-                rank=int(row["Rank"]),
-                symbol=str(row["Symbol"]),
-                company=str(row["Company"]),
-                signal_type=str(row["Signal Type"]),
-                crossover_date=str(row["Crossover Date"]),
-                close=float(row["Close"]),
-                sma6=float(row["SMA 6"]),
-                sma30=float(row["SMA 30"]),
+                rank=item["rank"],
+                symbol=item["symbol"],
+                company=item["company"],
+                status=item["status"],
+                potential_direction=item.get("potential_direction"),
+                current_price=item["current_price"],
+                day_change_percent=item.get("day_change_percent", 0.0),
+                entry=item.get("entry"),
+                stop_loss=item.get("stop_loss"),
+                target=item.get("target"),
+                risk_reward=item.get("risk_reward", f"1:{rr:g}"),
+                signal_strength=item.get("signal_strength", 0),
+                sma6=item.get("sma6", 0.0),
+                sma30=item.get("sma30", 0.0),
+                volume=item.get("volume", 0),
+                average_volume=item.get("average_volume", 0.0),
+                volume_ratio=item.get("volume_ratio", 0.0),
+                momentum_percent=item.get("momentum_percent", 0.0),
+                daily_trend=item.get("daily_trend", "NEUTRAL"),
+                intraday_trend=item.get("intraday_trend", "NEUTRAL"),
+                relative_strength=item.get("relative_strength", 0.0),
+                crossover_time=item.get("crossover_time"),
+                signal_time=item.get("signal_time", ""),
+                reason=item.get("reason", "")
             )
-            db.add(result_entry)
+            db.add(db_res)
 
         db.commit()
-        scanner_state.log(f"Scan complete. Found {len(results_records)} confirmed crossovers.")
-        scanner_state.stage = "Completed"
 
-        # Step 5: Database cleanup policy
-        cleanup_old_scans(db, keep_latest=1)
+        ist_now = datetime.now(KOLKATA_TZ).strftime("%H:%M IST")
+        scanner_state.last_scan_ist = ist_now
+        scanner_state.stage = "Scan completed"
+        scanner_state.log(
+            f"Scan completed at {ist_now}. Scanned: {scanner_state.stocks_scanned}/{scanner_state.total_stocks} | "
+            f"BUY: {scanner_state.buy_count} | SELL: {scanner_state.sell_count} | "
+            f"WATCH: {scanner_state.watch_count} | NO SIGNAL: {scanner_state.no_signal_count}"
+        )
 
-    except UpstoxAuthExpiredException:
-        scan_run.status = "FAILED"
-        scan_run.error_message = "Upstox authentication expired. Please reconnect your Upstox account."
-        db.commit()
+        # Cleanup old scans
+        cleanup_old_scans(db, keep_latest=5)
+
     except Exception as e:
-        logger.exception("Scanner execution error: %s", e)
+        logger.exception("Scanner execution failed: %s", e)
         scanner_state.error_message = str(e)
         scanner_state.stage = "Failed"
         scan_run.status = "FAILED"

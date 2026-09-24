@@ -1,26 +1,103 @@
-# Upstox Semi-Algo NSE Stock Scanner
+# NSE Intraday Semi-Algo Stock Scanner
 
-A production-ready, Render-deployable stock scanner built with **FastAPI**, **React + Vite**, and the **Upstox API**. It screens constituents of the **NIFTY 100** and **NIFTY 200** for confirmed daily **SMA 6** and **SMA 30** crossovers using completed daily candles.
+A production-ready **NSE intraday semi-algo stock scanner** and decision-support system built with **FastAPI**, **React + Vite**, **Pandas**, **PostgreSQL**, and **Yahoo Finance (`yfinance`)**.
 
-> [!IMPORTANT]
-> **Semi-Algo Safety Notice**: This application is strictly an analytical scanner and screening dashboard. It **does NOT** place any buy or sell orders automatically.
+Screens approximately **200 liquid, high-volume NSE equities** using **SMA 6/30 intraday crossovers**, session momentum, volume expansion confirmation, and price action breakout validation.
+
+> [!CAUTION]
+> **SAFETY & COMPLIANCE NOTICE**:
+> **Analysis only — no orders are placed automatically.**
+> This system is strictly an analytical scanner and decision-support dashboard. It does NOT contain broker order placement endpoints, does not use broker credentials, and will never execute trades on your behalf. All calculated trade levels (Entry, Stop-Loss, Target/Exit) are analytical strategy benchmarks and not guarantees of future price movement.
 
 ---
 
-## Features
+## Architecture
 
-- **Upstox API Integration**: Dynamic NSE instrument master resolution (`segment == 'NSE_EQ'`, `instrument_type == 'EQ'`) mapping trading symbols to `instrument_key`.
-- **Stock Universe**: Merged NIFTY 100 and NIFTY 200 constituents with automatic deduplication.
-- **Strategy Analysis**:
-  - Calculates 6-period SMA and 30-period SMA on completed daily Close prices using Pandas.
-  - Confirmed **BULLISH** Crossover: Previous candle `SMA6 <= SMA30`, Current completed candle `SMA6 > SMA30`.
-  - Confirmed **BEARISH** Crossover: Previous candle `SMA6 >= SMA30`, Current completed candle `SMA6 < SMA30`.
-  - Excludes incomplete intraday candles.
-- **Ranking**: Combines bullish and bearish signals, sorts by `crossover_date DESC` (most recent first), and assigns `Rank 1, 2, 3...`.
-- **Direct Access Token Input**: Connect instantly by providing your daily Upstox Access Token in the dashboard modal or via `.env`. OAuth 2.0 flow is also supported as an optional alternative.
-- **Real-Time Progress Tracking**: Live progress bar (`Scanning 45 / 200`), stage descriptions, and an expandable scanner activity log terminal.
-- **Results Table & Export**: Search by symbol/company, filter by signal type, sort by any column, and export clean CSV reports.
-- **Database & Cleanup Policy**: Compatible with Render PostgreSQL and local SQLite. Automatically preserves the latest scan and purges older temporary runs to avoid bloat.
+```text
+Yahoo Finance Market Data
+          ↓
+       yfinance
+          ↓
+  Pandas & Indicators Layer
+          ↓
+    Strategy Engine
+ (SMA 6/30, Momentum, Vol, Breakout)
+          ↓
+   Ranking & Alerts
+          ↓
+   FastAPI Endpoints
+          ↓
+React Dashboard (Vite)
+```
+
+**Brokerless & Keyless**: Works completely without any Upstox, Zerodha, or other broker API keys or access tokens.
+
+---
+
+## Strategy Rules & Objective Conditions
+
+### 1. Market Hours & Timeframes
+- **Market Hours**: 09:15 – 15:30 IST (`Asia/Kolkata` timezone).
+- **Timeframe Options**: `5 Minutes`, `10 Minutes` (Default), `15 Minutes`.
+- Evaluates only **fully completed candles**. Never generates confirmed signals on in-progress candles.
+
+### 2. SMA 6 / SMA 30 Crossovers
+- **Bullish Crossover**: Previous candle `SMA6 <= SMA30` AND current completed candle `SMA6 > SMA30`.
+- **Bearish Crossover**: Previous candle `SMA6 >= SMA30` AND current completed candle `SMA6 < SMA30`.
+- Never classifies `SMA6 > SMA30` alone as a new crossover.
+
+### 3. Primary Status Evaluation
+Every stock receives exactly one primary status:
+1. **BUY**:
+   - Confirmed bullish SMA crossover
+   - Current Close > SMA30
+   - Positive intraday momentum: `Momentum % > 0`
+   - Volume confirmation: `Volume Ratio >= 1.5x` (20-period rolling average)
+   - Price action confirmation: `Current Close > Previous Candle High`
+2. **SELL**:
+   - Confirmed bearish SMA crossover
+   - Current Close < SMA30
+   - Negative intraday momentum: `Momentum % < 0`
+   - Volume confirmation: `Volume Ratio >= 1.5x`
+   - Price action confirmation: `Current Close < Previous Candle Low`
+3. **WATCH**:
+   - Developing setup where primary crossover direction is present, but confirmation condition(s) are pending (e.g. Volume is 1.2x vs 1.5x required, or awaiting breakout).
+   - Clearly displays the exact missing condition and potential trade levels.
+4. **NO SIGNAL**:
+   - No setup present. Trade levels are `None` (never fabricated).
+
+### 4. Analytical Trade Levels
+- **BUY**:
+  - `Entry` = Previous Candle High (or breakout level)
+  - `Stop-Loss` = Most recent valid intraday swing low - buffer
+  - `Target` = `Entry + (Entry - Stop-Loss) × Reward` (Configurable R:R `1:1.5`, `1:2`, `1:3`)
+- **SELL**:
+  - `Entry` = Previous Candle Low
+  - `Stop-Loss` = Most recent valid intraday swing high + buffer
+  - `Target` = `Entry - (Stop-Loss - Entry) × Reward`
+- **WATCH**:
+  - Conditional entry level that would confirm the setup with corresponding SL and target.
+
+### 5. Signal Strength Score (0 to 100)
+Transparent additive objective score:
+- Bullish/Bearish SMA Crossover: `+20`
+- Price confirmed vs SMA30: `+15`
+- Volume >= 1.5x: `+20`
+- Positive/Negative Momentum: `+15`
+- Price Action Confirmation: `+15`
+- Daily Trend Alignment (`Daily SMA6 vs SMA30`): `+10`
+- Relative Strength vs NIFTY 50 (`^NSEI`): `+5`
+
+### 6. Multi-Factor Transparent Ranking
+Stocks are ranked sequentially (1 to N) by:
+1. Confirmed BUY/SELL setups first
+2. WATCH setups second
+3. Signal strength score
+4. Recency of confirmed crossover (`crossover_time DESC`)
+5. Volume expansion ratio
+6. Intraday momentum magnitude
+7. Daily trend alignment
+8. Relative strength vs NIFTY
 
 ---
 
@@ -29,79 +106,89 @@ A production-ready, Render-deployable stock scanner built with **FastAPI**, **Re
 ```text
 my first algo/
 ├── backend/
-│   ├── main.py               # FastAPI application, CORS, routers & lifecycle
-│   ├── config.py             # Pydantic Settings (secrets, URLs, tolerances)
-│   ├── auth.py               # Upstox Token validation, encryption & OAuth flow
-│   ├── models.py             # SQLAlchemy models (OAuthSession, ScanRun, ScanResult)
-│   ├── database.py           # DB connection, migrations & cleanup policy
-│   ├── universe.py           # NIFTY 100 + NIFTY 200 constituents & instrument mapping
-│   ├── upstox_client.py      # Async Upstox API v2 client with rate-limiting & backoff
-│   ├── scanner.py            # Historical data fetch, Pandas SMA 6/30 crossovers & ranking
-│   └── requirements.txt      # Python dependencies
+│   ├── main.py               # FastAPI REST endpoints, CORS, static serving
+│   ├── scanner.py            # Scanner orchestration & progress tracking
+│   ├── strategy.py           # SMA crossover, status logic, entry/SL/target & score
+│   ├── indicators.py         # SMA, volume metrics, momentum, swing levels, RS
+│   ├── market_data.py        # yfinance client, caching, batching, IST market hours
+│   ├── universe.py           # Curated 200 NSE stocks mapping
+│   ├── ranking.py            # Transparent multi-factor ranking algorithm
+│   ├── alerts.py             # Alert provider abstraction & duplicate prevention
+│   ├── models.py             # SQLAlchemy models (ScanRun, ScanResult, Signal)
+│   ├── database.py           # PostgreSQL/SQLite database manager & retention cleanup
+│   ├── config.py             # Application configuration & environment settings
+│   └── requirements.txt      # Backend Python dependencies
 │
 ├── frontend/
-│   ├── index.html            # Vite HTML template with Google Fonts (Outfit/Inter)
-│   ├── vite.config.js        # Vite config with API proxy to localhost:8000
-│   ├── package.json          # React, Lucide-react, Vite setup
+│   ├── index.html            # Vite HTML template with Google Fonts (Outfit, Inter)
+│   ├── package.json          # React 19, Vite, Lucide-react
+│   ├── vite.config.js        # Vite config with dev proxy to FastAPI
 │   └── src/
-│       ├── main.jsx          # React entry point
-│       ├── index.css         # Modern dark-mode styling tokens, gradients, animations
-│       ├── App.jsx           # Main dashboard view
-│       ├── api.js            # Fetch API client
+│       ├── main.jsx          # React DOM entry point
+│       ├── App.jsx           # Main trading dashboard & state manager
+│       ├── api.js            # Frontend REST client
+│       ├── index.css         # Dark cyber-trading design system & animations
 │       └── components/
-│           ├── Header.jsx         # Connection status badge, Upstox user profile, logout
-│           ├── MetricsCards.jsx   # Upstox status, last scan, stocks scanned, signal counts
-│           ├── ScannerControls.jsx# Run/Stop scanner buttons, live progress bar & logs
-│           ├── FilterBar.jsx      # Symbol search, Bullish/Bearish filters, CSV export
-│           ├── ResultsTable.jsx   # Tabular results matching exact required columns
-│           └── TokenModal.jsx     # Upstox token input modal
+│           ├── Header.jsx         # Live IST clock, market status, safety disclaimer
+│           ├── MetricsCards.jsx   # Selected, Scanned, BUY, SELL, WATCH, NO SIGNAL
+│           ├── ScannerControls.jsx# Timeframe, R:R, Vol Multiplier, Run/Stop, Logs
+│           ├── FilterBar.jsx      # Status tabs, search, multi-field sort, CSV export
+│           └── ResultsTable.jsx   # Analytical table with expandable WATCH details
 │
 ├── tests/
-│   ├── test_strategy.py      # Crossover and ranking unit tests
-│   └── test_api.py           # FastAPI endpoint tests
+│   ├── test_indicators.py    # SMA, volume metrics, momentum, swings, RS tests
+│   ├── test_strategy.py      # BUY, SELL, WATCH, NO SIGNAL, R:R calculation tests
+│   ├── test_ranking.py       # Priority ranking and recency sorting tests
+│   ├── test_market_data.py   # Resampling, market hours, mocked yfinance tests
+│   ├── test_scanner.py       # Duplicate signal prevention & state tests
+│   └── test_api.py           # FastAPI REST endpoint integration tests
 │
-├── .env.example              # Template for environment variables
-├── render.yaml               # Render Blueprint (FastAPI web service, static frontend, postgres db)
-├── Procfile                  # Process definition for web deployment
+├── .env.example              # Environment variable template
+├── render.yaml               # Render Blueprint (Web service, Static site, PostgreSQL)
+├── Dockerfile                # Production multi-stage Docker build
 └── README.md
 ```
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/health` | Health check & safety verification |
+| `GET` | `/api/market/status` | Current NSE market status (OPEN / CLOSED) & IST clock |
+| `GET` | `/api/universe` | List of ~200 NSE universe stocks with ticker mappings |
+| `POST` | `/api/scanner/run` | Triggers scanner in background with selected options |
+| `POST` | `/api/scanner/stop` | Gracefully stops running scan |
+| `GET` | `/api/scanner/status` | Live scanner status, counts, current stock, recent logs |
+| `GET` | `/api/scanner/progress` | Lightweight progress endpoint for UI progress bar |
+| `GET` | `/api/scanner/results` | Latest scan results with analytical metrics & levels |
 
 ---
 
 ## Local Development
 
 ### 1. Backend Setup
-
 ```bash
-# Navigate to project root
-python -m venv venv
-
 # Activate virtual environment
-# Windows:
-venv\Scripts\activate
-# macOS/Linux:
-# source venv/bin/activate
+python -m venv venv
+venv\Scripts\activate       # Windows
+# source venv/bin/activate  # macOS/Linux
 
 # Install dependencies
 pip install -r backend/requirements.txt
 
-# Run FastAPI server
+# Run automated test suite
+python -m pytest
+
+# Start FastAPI server
 uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The FastAPI API documentation is available at: `http://localhost:8000/docs`
-
 ### 2. Frontend Setup
-
-In a separate terminal:
-
 ```bash
 cd frontend
-
-# Install Node dependencies
 npm install
-
-# Start Vite dev server
 npm run dev
 ```
 
@@ -109,59 +196,21 @@ Open `http://localhost:5173` in your browser.
 
 ---
 
-## Authentication & Upstox Access Token
-
-Upstox access tokens are valid for 24 hours (expiring at 03:30 AM IST). You do **not** need to register developer OAuth credentials if you already have an access token:
-
-1. Click the **Connect Upstox** button on the top right of the dashboard.
-2. Paste your active Upstox access token.
-3. Click **Connect Upstox**. The system validates your token against `https://api.upstox.com/v2/user/profile`, shows your user profile, and enables the scanner.
-
-Alternatively, set `UPSTOX_ACCESS_TOKEN=your_token_here` in your `.env` file or Render environment variables.
-
----
-
 ## Running Automated Tests
 
-To run the complete test suite:
+Run the full automated test suite (mocked market data, zero network requests):
 
 ```bash
-python -m pytest tests -v
+python -m pytest
 ```
 
 ---
 
-## Render Deployment
+## Deployment on Render
 
-This project includes a ready-to-deploy [`render.yaml`](file:///render.yaml) Blueprint:
+This repository includes a `render.yaml` blueprint defining:
+1. `nse-scanner-backend`: Python Web Service running FastAPI.
+2. `nse-scanner-frontend`: Static Site serving React + Vite.
+3. `nse-scanner-postgres`: Managed PostgreSQL instance.
 
-1. Push your repository to GitHub.
-2. In the [Render Dashboard](https://dashboard.render.com/), click **New** > **Blueprint**.
-3. Connect your GitHub repository.
-4. Render will automatically provision:
-   - **`nse-scanner-backend`**: Python FastAPI Web Service.
-   - **`nse-scanner-frontend`**: React + Vite Static Site.
-   - **`nse-scanner-postgres`**: Managed PostgreSQL Database.
-5. In the backend service environment variables, set `UPSTOX_ACCESS_TOKEN` (or provide it directly from the deployed dashboard).
-
----
-
-## Docker Deployment
-
-You can build and run the entire application (FastAPI backend + React frontend) in a single optimized container using the provided multi-stage `Dockerfile`:
-
-### 1. Build the Docker Image
-```bash
-docker build -t upstox-nse-scanner .
-```
-
-### 2. Run the Container
-```bash
-docker run -p 8000:8000 \
-  -e UPSTOX_ACCESS_TOKEN="your_daily_token_here" \
-  -e ENVIRONMENT="production" \
-  upstox-nse-scanner
-```
-
-Once running, access the dashboard at: `http://localhost:8000`
-
+Deploy directly via Render Blueprint or Docker container.
