@@ -9,12 +9,11 @@ __pycache__
 *.pyd
 .pytest_cache
 *.egg-info
-venv
+venv/
 .env
 
 # Local data & caches
 data/*.db
-data/upstox_nse_instruments.json
 
 # Node & Frontend
 frontend/node_modules
