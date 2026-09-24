@@ -230,7 +230,8 @@ async def execute_scanner(
                         benchmark_candles=benchmark_candles,
                         volume_multiplier=vm,
                         risk_reward_ratio=rr,
-                        timeframe=tf
+                        timeframe=tf,
+                        is_top_active=stock.get("is_top_active", False)
                     )
 
                 raw_results.append(result)

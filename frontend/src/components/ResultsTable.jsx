@@ -130,7 +130,14 @@ export default function ResultsTable({
                       {/* Symbol & Company */}
                       <td>
                         <div className="stock-info-cell">
-                          <span className="stock-symbol">{row.symbol}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span className="stock-symbol">{row.symbol}</span>
+                            {row.is_top_active && (
+                              <span className="active-stock-tag" title="NSE Most Active Stock by Volume & Value">
+                                ACTIVE
+                              </span>
+                            )}
+                          </div>
                           <span className="stock-company" title={row.company}>
                             {row.company}
                           </span>

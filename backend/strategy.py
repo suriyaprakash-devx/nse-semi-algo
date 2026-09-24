@@ -132,7 +132,8 @@ def evaluate_stock_strategy(
     benchmark_candles: Optional[List[Dict[str, Any]]] = None,
     volume_multiplier: float = 1.5,
     risk_reward_ratio: float = 2.0,
-    timeframe: str = "10m"
+    timeframe: str = "10m",
+    is_top_active: bool = False
 ) -> Dict[str, Any]:
     """
     Evaluates SMA 6/30 strategy for a stock on completed candles:
@@ -421,5 +422,6 @@ def evaluate_stock_strategy(
         "crossover_time": crossover_time,
         "signal_time": signal_time,
         "reason": reason,
-        "contributing_factors": contributing_factors
+        "contributing_factors": contributing_factors,
+        "is_top_active": is_top_active
     }

@@ -2,12 +2,12 @@ import os
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
 from backend.config import settings
 
 logger = logging.getLogger("scanner.universe")
 
-# Curated list of high-volume, liquid active NSE equities (NIFTY 200 constituents)
+# Authoritative list of NSE high-volume, liquid active equities (NIFTY 200 + NSE Most Active)
 NIFTY_200_SYMBOLS = [
     # NIFTY 50 & NIFTY Next 50 (Large Caps)
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "BHARTIARTL", "INFY", "ITC", "SBIN",
@@ -26,26 +26,35 @@ NIFTY_200_SYMBOLS = [
     "LUPIN", "AUROPHARMA", "ZYDUSLIFE", "MANKIND", "ALKEM", "TORNTPHARM",
     "COLPAL", "DABUR", "MARICO", "PGHH", "BERGEPAINT",
 
-    # NIFTY Midcap & High Volume Active Equities (Completing NIFTY 200)
+    # NIFTY Midcap & NSE Active Stocks
     "ACC", "ASTRAL", "AUBANK", "BALKRISIND", "BANDHANBNK", "BATAINDIA",
     "BDL", "BHARATFORG", "BHEL", "BIOCON", "BSOFT", "CANFINHOME", "CDSL",
-    "COFORGE", "CONCOR", "COROMANDEL", "CROMPTON", "DEEPAKNTR", "DELHIVERY",
-    "DIXON", "ESCORTS", "EXIDEIND", "FEDERALBNK", "FORTIS", "GLENMARK",
+    "COFORGE", "CONCOR", "CROMPTON", "DEEPAKNTR", "DELHIVERY",
+    "DIXON", "ESCORTS", "EXIDEIND", "FEDERALBNK", "FORTIS",
     "GMRAIRPORT", "GNFC", "GODREJPROP", "GRANULES", "HDFCAMC",
     "HINDPETRO", "HUDCO", "IDFCFIRSTB", "IEX", "IGL", "INDHOTEL", "IPCALAB",
     "IRCTC", "IRFC", "JINDALSTEL", "JSWENERGY", "JUBLFOOD", "KALYANKJIL",
     "KPITTECH", "LTF", "LALPATHLAB", "LAURUSLABS", "LICHSGFIN", "LTTS",
-    "M&MFIN", "METROPOLIS", "MFSL", "MPHASIS", "MRF", "MUTHOOTFIN", "NATIONALUM",
+    "M&MFIN", "MFSL", "MPHASIS", "MRF", "MUTHOOTFIN", "NATIONALUM",
     "NAVINFLUOR", "NBCC", "NHPC", "NLCINDIA", "NMDC", "OBEROIRLTY", "OIL",
     "PAGEIND", "PATANJALI", "PETRONET", "PHOENIXLTD", "POONAWALLA", "PRESTIGE",
-    "RADICO", "RAMCOCEM", "RVNL", "SAIL", "SCHAEFFLER", "SJVN", "SONACOMS",
-    "SRF", "STARHEALTH", "SUNDARMFIN", "SUNTV", "SUPREMEIND", "SUZLON",
-    "SYNGENE", "TATACHEM", "TATACOMM", "TATAELXSI", "TATATECH", "TORNTPOWER",
+    "RADICO", "RVNL", "SAIL", "SCHAEFFLER", "SJVN", "SONACOMS",
+    "SRF", "SUNTV", "SUPREMEIND", "SUZLON",
+    "TATACHEM", "TATACOMM", "TATAELXSI", "TATATECH", "TORNTPOWER",
     "TRIDENT", "UBL", "UPL", "VOLTAS", "YESBANK",
 
-    # Additional Active & Liquid NSE Equities
+    # NSE Official Most Active Stocks by Volume and Value
+    "IDEA", "COCHINSHIP", "MAZDOCK", "BSE", "MCX", "RAILTEL", "IRB",
     "IREDA", "POLICYBZR", "ANGELONE", "APLAPOLLO", "INDIAMART", "KAYNES", "BEML"
 ]
+
+# Set of Top Active Equities featured on the NSE India website
+NSE_TOP_ACTIVE_SYMBOLS: Set[str] = {
+    "IDEA", "SUZLON", "YESBANK", "IREDA", "RVNL", "IRFC", "NHPC", "SJVN", "NBCC",
+    "COCHINSHIP", "MAZDOCK", "BSE", "MCX", "RAILTEL", "CDSL", "ZOMATO", "JIOFIN",
+    "TATASTEEL", "BHEL", "SAIL", "PNB", "TRENT", "HAL", "BEL", "HUDCO", "RELIANCE",
+    "HDFCBANK", "ICICIBANK", "SBIN", "INFY", "ITC", "AXISBANK", "TCS", "KALYANKJIL"
+}
 
 COMPANY_NAME_OVERRIDES: Dict[str, str] = {
     "RELIANCE": "Reliance Industries Ltd",
@@ -95,12 +104,20 @@ COMPANY_NAME_OVERRIDES: Dict[str, str] = {
     "POLICYBZR": "PB Fintech Ltd",
     "ANGELONE": "Angel One Ltd",
     "APLAPOLLO": "APL Apollo Tubes Ltd",
-    "INDIAMART": "IndiaMART InterMESH Ltd"
+    "INDIAMART": "IndiaMART InterMESH Ltd",
+    "IDEA": "Vodafone Idea Ltd",
+    "COCHINSHIP": "Cochin Shipyard Ltd",
+    "MAZDOCK": "Mazagon Dock Shipbuilders Ltd",
+    "BSE": "BSE Ltd",
+    "MCX": "Multi Commodity Exchange of India Ltd",
+    "RAILTEL": "RailTel Corp of India Ltd",
+    "KAYNES": "Kaynes Technology India Ltd",
+    "BEML": "BEML Ltd"
 }
 
 class UniverseManager:
     """
-    Manages the 200 NSE stock universe without broker dependencies.
+    Manages the 200 NSE stock universe including NSE Most Active Stocks.
     Maps NSE trading symbols to companies and yfinance symbols.
     """
 
@@ -122,10 +139,9 @@ class UniverseManager:
     def get_universe(self) -> List[Dict[str, Any]]:
         """
         Returns exactly unique NSE stocks with:
-        symbol, company, yfinance_symbol
-        Target: approximately 200 stocks.
+        symbol, company, yfinance_symbol, is_top_active
+        Target: exactly 200 stocks.
         """
-        # Deduplicate and sort
         seen = set()
         unique_symbols = []
         for s in NIFTY_200_SYMBOLS:
@@ -143,7 +159,6 @@ class UniverseManager:
                 symbol,
                 self._company_map.get(symbol, f"{symbol} Ltd")
             )
-            # Normalize company title case if all caps
             if company.isupper():
                 company = company.title()
 
@@ -151,12 +166,16 @@ class UniverseManager:
                 "symbol": symbol,
                 "company": company,
                 "yfinance_symbol": f"{symbol}.NS",
-                "exchange": "NSE"
+                "exchange": "NSE",
+                "is_top_active": symbol in NSE_TOP_ACTIVE_SYMBOLS
             })
 
         return universe
 
     def get_universe_symbols(self) -> List[str]:
         return [item["symbol"] for item in self.get_universe()]
+
+    def get_top_active_symbols(self) -> List[str]:
+        return sorted(list(NSE_TOP_ACTIVE_SYMBOLS))
 
 universe_manager = UniverseManager()
