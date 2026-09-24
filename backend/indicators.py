@@ -14,37 +14,83 @@ def calculate_sma(series: pd.Series, window: int) -> pd.Series:
         return pd.Series(np.nan, index=series.index)
     return series.rolling(window=window, min_periods=window).mean()
 
-def calculate_volume_metrics(df: pd.DataFrame, lookback: int = 20) -> Dict[str, float]:
+def calculate_volume_metrics(
+    df: pd.DataFrame,
+    lookback: int = 20,
+    max_tod_days: int = 10
+) -> Dict[str, Any]:
     """
-    Calculates volume metrics using completed candles:
-    - Average Volume: rolling mean of previous `lookback` completed candles (excluding current).
-    - Current Volume: volume of the latest completed candle.
-    - Volume Ratio: Current Volume / Average Volume.
+    Calculates time-of-day normalized volume metrics using completed candles:
+    1. Time-of-Day (TOD) Normalization:
+       Extracts the time slot of the latest completed candle (e.g. 09:25 IST)
+       and calculates the average volume for that exact time slot across the
+       previous trading days (up to `max_tod_days`, e.g. past 10 trading days).
+       This eliminates the U-shaped intraday volume curve distortion.
+    2. Fallback:
+       If fewer than 2 prior trading days contain the matching time slot
+       (e.g. first day in dataset, or untimed series), falls back
+       to the rolling average of prior `lookback` completed candles.
     """
     if df.empty or "volume" not in df.columns:
-        return {"current_volume": 0, "average_volume": 0.0, "volume_ratio": 1.0}
+        return {
+            "current_volume": 0,
+            "average_volume": 0.0,
+            "volume_ratio": 1.0,
+            "normalized_by": "FALLBACK"
+        }
 
     vol_series = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
     current_vol = float(vol_series.iloc[-1])
 
     if len(vol_series) < 2:
-        return {"current_volume": current_vol, "average_volume": current_vol, "volume_ratio": 1.0}
+        return {
+            "current_volume": int(current_vol),
+            "average_volume": current_vol,
+            "volume_ratio": 1.0,
+            "normalized_by": "SINGLE_CANDLE"
+        }
 
-    # Use prior completed candles for the average
-    prior_vols = vol_series.iloc[:-1]
-    lookback_window = min(lookback, len(prior_vols))
-    if lookback_window == 0:
-        return {"current_volume": current_vol, "average_volume": current_vol, "volume_ratio": 1.0}
+    # Attempt Time-of-Day (TOD) normalization
+    used_tod = False
+    avg_vol = 0.0
 
-    avg_vol = float(prior_vols.tail(lookback_window).mean())
-    if avg_vol <= 0:
-        avg_vol = 1.0
+    if "timestamp" in df.columns or "dt" in df.columns:
+        try:
+            dts = pd.to_datetime(df["dt"] if "dt" in df.columns else df["timestamp"])
+            latest_dt = dts.iloc[-1]
+            latest_time = latest_dt.time()
+            latest_date = latest_dt.date()
+
+            # Filter prior completed candles from PREVIOUS trading days at the EXACT same time slot
+            prior_mask = (dts.dt.date < latest_date) & (dts.dt.time == latest_time)
+            same_slot_df = df[prior_mask]
+
+            if len(same_slot_df) >= 2:
+                # Use average of up to past max_tod_days for this time slot
+                slot_vols = pd.to_numeric(same_slot_df["volume"], errors="coerce").fillna(0).tail(max_tod_days)
+                avg_vol = float(slot_vols.mean())
+                if avg_vol > 0:
+                    used_tod = True
+        except Exception as e:
+            logger.debug("TOD volume calculation exception, using rolling fallback: %s", e)
+
+    # Fallback to rolling average of previous `lookback` completed candles
+    if not used_tod or avg_vol <= 0:
+        prior_vols = vol_series.iloc[:-1]
+        lookback_window = min(lookback, len(prior_vols))
+        if lookback_window == 0:
+            avg_vol = current_vol if current_vol > 0 else 1.0
+        else:
+            avg_vol = float(prior_vols.tail(lookback_window).mean())
+            if avg_vol <= 0:
+                avg_vol = 1.0
 
     vol_ratio = round(current_vol / avg_vol, 2)
     return {
         "current_volume": int(current_vol),
         "average_volume": round(avg_vol, 2),
-        "volume_ratio": vol_ratio
+        "volume_ratio": vol_ratio,
+        "normalized_by": "TIME_OF_DAY" if used_tod else "ROLLING_20"
     }
 
 def calculate_intraday_momentum(df: pd.DataFrame) -> Tuple[float, float]:

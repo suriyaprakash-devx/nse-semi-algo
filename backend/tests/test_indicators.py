@@ -29,6 +29,39 @@ def test_volume_metrics():
     assert metrics["current_volume"] == 2500
     assert metrics["average_volume"] == pytest.approx(1000.0)
     assert metrics["volume_ratio"] == pytest.approx(2.5)
+    assert metrics["normalized_by"] == "ROLLING_20"
+
+def test_time_of_day_volume_normalization():
+    # 5 trading days with identical time slots (09:15, 09:25, 09:35)
+    # Days 1 to 4: 09:25 volume is 10,000, 12,000, 8,000, 10,000 -> Mean at 09:25 = 10,000
+    # Day 5 (today): 09:25 volume surges to 25,000 -> Ratio should be 25,000 / 10,000 = 2.5x
+    data = []
+    base_dates = [
+        datetime(2026, 9, 20),
+        datetime(2026, 9, 21),
+        datetime(2026, 9, 22),
+        datetime(2026, 9, 23),
+        datetime(2026, 9, 24)
+    ]
+    historical_925_vols = [10000, 12000, 8000, 10000]
+
+    for day_idx, dt in enumerate(base_dates):
+        # 09:15
+        data.append({"timestamp": dt.strftime("%Y-%m-%d 09:15"), "volume": 15000})
+        # 09:25
+        v_925 = historical_925_vols[day_idx] if day_idx < 4 else 25000
+        data.append({"timestamp": dt.strftime("%Y-%m-%d 09:25"), "volume": v_925})
+        # 09:35 (only for past days)
+        if day_idx < 4:
+            data.append({"timestamp": dt.strftime("%Y-%m-%d 09:35"), "volume": 5000})
+
+    df = pd.DataFrame(data)
+    metrics = calculate_volume_metrics(df, lookback=20, max_tod_days=10)
+
+    assert metrics["current_volume"] == 25000
+    assert metrics["average_volume"] == pytest.approx(10000.0)
+    assert metrics["volume_ratio"] == pytest.approx(2.5)
+    assert metrics["normalized_by"] == "TIME_OF_DAY"
 
 def test_intraday_momentum():
     base = datetime(2026, 9, 24, 9, 15)
