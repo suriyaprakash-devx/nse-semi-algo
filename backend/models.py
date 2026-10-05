@@ -1,28 +1,36 @@
 from datetime import datetime, timezone
-from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, ForeignKey, Index, Text, UniqueConstraint
-)
-from sqlalchemy.orm import declarative_base, relationship
+import uuid
+from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy.orm import relationship
+from backend.database import Base
 
-Base = declarative_base()
+def utcnow():
+    return datetime.now(timezone.utc)
+
+class OAuthSession(Base):
+    __tablename__ = "oauth_sessions"
+
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(100), nullable=False, index=True)
+    user_name = Column(String(200), nullable=True)
+    email = Column(String(200), nullable=True)
+    encrypted_access_token = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
 
 class ScanRun(Base):
     __tablename__ = "scan_runs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    started_at = Column(DateTime, default=utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
-    timeframe = Column(String(16), default="10m", nullable=False)
-    stocks_selected = Column(Integer, default=200, nullable=False)
     stocks_scanned = Column(Integer, default=0, nullable=False)
-    buy_count = Column(Integer, default=0, nullable=False)
-    sell_count = Column(Integer, default=0, nullable=False)
-    watch_count = Column(Integer, default=0, nullable=False)
-    no_signal_count = Column(Integer, default=0, nullable=False)
-    status = Column(String(32), default="RUNNING", nullable=False)  # RUNNING, COMPLETED, STOPPED, FAILED
+    signals_found = Column(Integer, default=0, nullable=False)
+    status = Column(String(50), default="running", nullable=False)  # running, completed, failed
     error_message = Column(Text, nullable=True)
 
-    results = relationship("ScanResult", back_populates="scan_run", cascade="all, delete-orphan")
+    results = relationship("ScanResult", back_populates="scan_run", cascade="all, delete-orphan", order_by="ScanResult.rank")
 
 class ScanResult(Base):
     __tablename__ = "scan_results"
@@ -30,48 +38,36 @@ class ScanResult(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     scan_id = Column(Integer, ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False, index=True)
     rank = Column(Integer, nullable=False)
-    symbol = Column(String(32), index=True, nullable=False)
-    company = Column(String(256), nullable=False)
-    status = Column(String(16), nullable=False)  # BUY, SELL, WATCH, NO SIGNAL
-    potential_direction = Column(String(16), nullable=True)  # BUY, SELL, or None
-    current_price = Column(Float, nullable=False)
-    day_change_percent = Column(Float, default=0.0, nullable=False)
-    entry = Column(Float, nullable=True)
-    stop_loss = Column(Float, nullable=True)
-    target = Column(Float, nullable=True)
-    risk_reward = Column(String(16), default="1:2", nullable=False)
-    signal_strength = Column(Integer, default=0, nullable=False)
+    symbol = Column(String(50), nullable=False, index=True)
+    company = Column(String(250), nullable=False)
+    signal_type = Column(String(20), nullable=False)  # BULLISH / BEARISH
+    crossover_date = Column(String(20), nullable=False)  # YYYY-MM-DD
+    close = Column(Float, nullable=False)
     sma6 = Column(Float, nullable=False)
     sma30 = Column(Float, nullable=False)
-    volume = Column(Integer, default=0, nullable=False)
-    average_volume = Column(Float, default=0.0, nullable=False)
-    volume_ratio = Column(Float, default=0.0, nullable=False)
-    momentum_percent = Column(Float, default=0.0, nullable=False)
-    daily_trend = Column(String(16), default="NEUTRAL", nullable=False)  # BULLISH, BEARISH, NEUTRAL
-    intraday_trend = Column(String(16), default="NEUTRAL", nullable=False)  # BULLISH, BEARISH, NEUTRAL
-    relative_strength = Column(Float, default=0.0, nullable=False)  # RS vs NIFTY
-    crossover_time = Column(String(32), nullable=True)
-    signal_time = Column(String(32), nullable=False)
-    reason = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utcnow, nullable=False)
 
     scan_run = relationship("ScanRun", back_populates="results")
 
-    __table_args__ = (
-        Index("ix_scan_results_scan_rank", "scan_id", "rank"),
-    )
+def cleanup_old_scans(db, keep_count: int = 1, delete_all: bool = False):
+    """
+    Cleans up old scan runs and related results based on retention policy.
+    - If delete_all=True: deletes all completed/failed scans.
+    - If keep_count=1: keeps the latest scan, deletes older ones.
+    """
+    if delete_all:
+        db.query(ScanRun).delete()
+        db.commit()
+        return
 
-class Signal(Base):
-    __tablename__ = "signals"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(String(32), nullable=False)
-    timeframe = Column(String(16), nullable=False)
-    candle_timestamp = Column(String(32), nullable=False)
-    signal_type = Column(String(16), nullable=False)  # BUY, SELL, WATCH
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("symbol", "timeframe", "candle_timestamp", "signal_type", name="uq_signal_identity"),
-        Index("ix_signals_lookup", "symbol", "timeframe", "candle_timestamp"),
-    )
+    # Find IDs of scans to keep
+    keep_ids = [
+        r[0] for r in db.query(ScanRun.id)
+        .order_by(ScanRun.id.desc())
+        .limit(keep_count)
+        .all()
+    ]
+    if keep_ids:
+        # Delete scan runs older than the kept ones
+        db.query(ScanRun).filter(~ScanRun.id.in_(keep_ids)).delete(synchronize_session=False)
+        db.commit()

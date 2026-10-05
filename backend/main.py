@@ -1,256 +1,223 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import init_db, get_db
-from backend.models import ScanRun, ScanResult
-from backend.scanner import scanner_state, execute_scanner
-from backend.universe import universe_manager
-from backend.market_data import market_data_api
+from backend.models import ScanRun, ScanResult, cleanup_old_scans
+from backend.auth import (
+    router as auth_router,
+    get_current_session,
+    get_current_session_optional,
+    get_active_access_token,
+    OAuthSession
+)
+from backend.scanner import scanner_manager, HTTPException_401
+from backend.upstox_client import upstox_client_manager
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("scanner.api")
+logger = logging.getLogger("upstox_scanner")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing database tables...")
+    # Startup: Initialize Database and background preload of instrument master
+    logger.info("Initializing Upstox Semi-Algo Scanner backend...")
     init_db()
-    logger.info("Market data provider: Yahoo Finance (yfinance)")
-    logger.info("NSE semi-algo scanner ready. No broker credentials required.")
+
+    # Pre-fetch instrument master asynchronously so initial scan has zero cold-start delay
+    asyncio.create_task(prewarm_instrument_cache())
     yield
-    logger.info("Application shutting down.")
+    # Shutdown
+    logger.info("Shutting down Upstox Semi-Algo Scanner backend...")
+
+async def prewarm_instrument_cache():
+    try:
+        await asyncio.sleep(1)
+        logger.info("Pre-warming Upstox NSE instrument master...")
+        await upstox_client_manager.get_nse_instruments()
+    except Exception as e:
+        logger.warning(f"Background instrument preload warning: {e}")
 
 app = FastAPI(
-    title="NSE Intraday Semi-Algo Stock Scanner",
-    description=(
-        "Production-ready decision-support system screening ~200 NSE liquid equities "
-        "using SMA 6/30 crossover, intraday momentum, volume confirmation, and price action. "
-        "Strictly analysis only — never places orders automatically."
-    ),
-    version="3.0.0",
+    title="Upstox Semi-Algo NSE Scanner",
+    description="Semi-automated NSE NIFTY 100/200 Stock Scanner with SMA 6 & 30 Crossover Detection",
+    version="1.0.0",
     lifespan=lifespan
 )
 
-# CORS configuration
-allowed_origins = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:3000",
-]
-if settings.FRONTEND_URL and settings.FRONTEND_URL not in allowed_origins:
-    allowed_origins.append(settings.FRONTEND_URL)
+# Configure CORS
+origins = [origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",") if origin.strip()]
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in origins:
+    origins.append(settings.FRONTEND_URL)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.ENVIRONMENT == "development" else allowed_origins,
+    allow_origins=origins if origins else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ----------------- Request / Response Models -----------------
+# Include Authentication Router
+app.include_router(auth_router)
 
-class RunScannerRequest(BaseModel):
-    timeframe: Optional[str] = Field("10m", description="Candle timeframe: 5m, 10m, or 15m")
-    risk_reward: Optional[float] = Field(2.0, description="Risk:Reward ratio: 1.5, 2.0, or 3.0")
-    volume_multiplier: Optional[float] = Field(1.5, description="Volume confirmation multiplier: e.g. 1.5")
-
-class ScanRunResponse(BaseModel):
-    message: str
-    status: str
-    timeframe: str
-    risk_reward: float
-    volume_multiplier: float
-
-# ----------------- Health & Market Endpoints -----------------
-
-@app.get("/api/health")
+@app.get("/health")
 def health_check():
+    from datetime import datetime, timezone
     return {
-        "status": "ok",
-        "service": "NSE Intraday Semi-Algo Scanner",
-        "market_data_provider": "Yahoo Finance (yfinance)",
-        "broker_connection": "None (Analysis Only)",
-        "order_placement": "DISABLED (Never places orders)",
-        "environment": settings.ENVIRONMENT
+        "status": "healthy",
+        "service": "upstox-sma-scanner",
+        "environment": settings.ENVIRONMENT,
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-@app.get("/api/market/status")
-def get_market_status():
-    """Returns current NSE market hours status in Asia/Kolkata timezone."""
-    return market_data_api.get_market_status()
-
-@app.get("/api/universe")
-def get_universe():
-    """Returns eligible ~200 NSE stocks with symbol, company, and yfinance_symbol."""
-    universe = universe_manager.get_universe()
-    return {
-        "stocks_selected": len(universe),
-        "universe": universe
-    }
-
-# ----------------- Scanner Control Endpoints -----------------
-
-@app.post("/api/scanner/run", response_model=ScanRunResponse)
-async def run_scanner(
-    request: Optional[RunScannerRequest] = None,
-    background_tasks: BackgroundTasks = BackgroundTasks()
+@app.post("/api/scanner/run")
+async def trigger_scan(
+    background_tasks: BackgroundTasks,
+    session: OAuthSession = Depends(get_current_session)
 ):
-    """Starts the NSE scanner in background using selected timeframe and parameters."""
-    if scanner_state.is_running:
-        raise HTTPException(status_code=409, detail="A scan is currently running. Please wait or stop the current scan.")
+    """
+    Trigger the semi-algo scanner.
+    Requires an active and valid Upstox OAuth session.
+    Scans NIFTY 100 + 200 universe, calculates SMA 6 & 30 with current day candle,
+    detects confirmed crossovers, ranks by crossover date, and stores results.
+    """
+    if scanner_manager.is_running:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "status": "running",
+                "message": "Scan already in progress.",
+                "details": scanner_manager.get_status()
+            }
+        )
 
-    req = request or RunScannerRequest()
-    tf = req.timeframe if req.timeframe in ("5m", "10m", "15m") else "10m"
-    rr = req.risk_reward if req.risk_reward and req.risk_reward > 0 else 2.0
-    vm = req.volume_multiplier if req.volume_multiplier and req.volume_multiplier > 0 else 1.5
+    # Get active decrypted access token
+    try:
+        access_token = get_active_access_token(session)
+    except HTTPException:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Upstox authentication expired. Please reconnect your Upstox account."
+        )
 
-    background_tasks.add_task(execute_scanner, timeframe=tf, risk_reward=rr, volume_multiplier=vm)
+    # Launch scan task in background
+    asyncio.create_task(scanner_manager.run_scan(access_token=access_token))
 
-    return ScanRunResponse(
-        message="Scanner initiated successfully in background.",
-        status="RUNNING",
-        timeframe=tf,
-        risk_reward=rr,
-        volume_multiplier=vm
-    )
-
-@app.post("/api/scanner/stop")
-def stop_scanner():
-    """Gracefully requests the scanner to abort."""
-    if not scanner_state.is_running:
-        return {"message": "Scanner is not currently running."}
-    scanner_state.should_stop = True
-    scanner_state.stage = "Stopping scan..."
-    return {"message": "Stop signal transmitted to scanner engine."}
+    return {
+        "status": "started",
+        "message": "Semi-algo scanner execution started.",
+        "progress": scanner_manager.progress_message
+    }
 
 @app.get("/api/scanner/status")
 def get_scanner_status():
-    """Returns real-time progress, counts, current stock, and recent logs."""
-    return scanner_state.to_dict()
-
-@app.get("/api/scanner/progress")
-def get_scanner_progress():
-    """Returns lightweight progress info for rapid polling."""
-    return {
-        "is_running": scanner_state.is_running,
-        "stage": scanner_state.stage,
-        "progress_pct": round(scanner_state.progress_pct, 1),
-        "stocks_scanned": scanner_state.stocks_scanned,
-        "total_stocks": scanner_state.total_stocks,
-        "current_stock": scanner_state.current_stock
-    }
+    """
+    Returns real-time progress and status of the scanner.
+    """
+    return scanner_manager.get_status()
 
 @app.get("/api/scanner/results")
 def get_scanner_results(
-    status: Optional[str] = Query(None, description="Filter by BUY, SELL, WATCH, NO SIGNAL"),
-    search: Optional[str] = Query(None, description="Search by symbol or company"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    session: Optional[OAuthSession] = Depends(get_current_session_optional)
 ):
     """
-    Returns latest scan results formatted with all required analytical columns.
-    Reads from in-memory state or database fallback.
+    Returns the latest scan results formatted with:
+    Rank, Symbol, Company, Signal Type, Crossover Date, Close, SMA 6, SMA 30.
     """
-    results: List[Dict[str, Any]] = []
-    completed_at = None
-    timeframe = scanner_state.timeframe
-
-    if scanner_state.latest_results:
-        results = scanner_state.latest_results
-        completed_at = scanner_state.completed_at.isoformat() if scanner_state.completed_at else None
+    # 1. Check in-memory results first
+    if scanner_manager.latest_results:
+        results = scanner_manager.latest_results
+        scan_id = scanner_manager.current_scan_id
     else:
-        # Fallback to database
+        # 2. Check latest completed scan run from Database
         latest_run = (
             db.query(ScanRun)
-            .filter(ScanRun.status == "COMPLETED")
+            .filter(ScanRun.status == "completed")
             .order_by(ScanRun.id.desc())
             .first()
         )
+        if not latest_run:
+            return {
+                "scan_id": None,
+                "status": "no_scans",
+                "stocks_scanned": 0,
+                "signals_found": 0,
+                "results": []
+            }
 
-        if latest_run:
-            completed_at = latest_run.completed_at.isoformat() if latest_run.completed_at else None
-            timeframe = latest_run.timeframe
-            db_results = (
-                db.query(ScanResult)
-                .filter(ScanResult.scan_id == latest_run.id)
-                .order_by(ScanResult.rank.asc())
-                .all()
-            )
-            for r in db_results:
-                results.append({
-                    "rank": r.rank,
-                    "symbol": r.symbol,
-                    "company": r.company,
-                    "status": r.status,
-                    "potential_direction": r.potential_direction,
-                    "current_price": r.current_price,
-                    "day_change_percent": r.day_change_percent,
-                    "entry": r.entry,
-                    "stop_loss": r.stop_loss,
-                    "target": r.target,
-                    "risk_reward": r.risk_reward,
-                    "signal_strength": r.signal_strength,
-                    "sma6": r.sma6,
-                    "sma30": r.sma30,
-                    "volume": r.volume,
-                    "average_volume": r.average_volume,
-                    "volume_ratio": r.volume_ratio,
-                    "momentum_percent": r.momentum_percent,
-                    "daily_trend": r.daily_trend,
-                    "intraday_trend": r.intraday_trend,
-                    "relative_strength": r.relative_strength,
-                    "crossover_time": r.crossover_time,
-                    "signal_time": r.signal_time,
-                    "reason": r.reason
-                })
-
-    # Apply optional filtering
-    filtered = results
-    if status and status.upper() != "ALL":
-        filtered = [r for r in filtered if r.get("status", "").upper() == status.upper()]
-
-    if search:
-        s_lower = search.lower().strip()
-        filtered = [
-            r for r in filtered
-            if s_lower in r.get("symbol", "").lower() or s_lower in r.get("company", "").lower()
+        scan_id = latest_run.id
+        results = [
+            {
+                "Rank": r.rank,
+                "Symbol": r.symbol,
+                "Company": r.company,
+                "Signal Type": r.signal_type,
+                "Crossover Date": r.crossover_date,
+                "Close": round(r.close, 2),
+                "SMA 6": round(r.sma6, 2),
+                "SMA 30": round(r.sma30, 2)
+            }
+            for r in latest_run.results
         ]
 
-    # Calculate summary counts
-    buy_count = sum(1 for r in results if r.get("status") == "BUY")
-    sell_count = sum(1 for r in results if r.get("status") == "SELL")
-    watch_count = sum(1 for r in results if r.get("status") == "WATCH")
-    no_signal_count = sum(1 for r in results if r.get("status") == "NO SIGNAL")
+    # Handle DELETE_RESULTS_AFTER_SCAN policy if configured
+    if settings.DELETE_RESULTS_AFTER_SCAN:
+        cleanup_old_scans(db, keep_count=0, delete_all=True)
 
     return {
-        "results": filtered,
-        "count": len(filtered),
-        "total_count": len(results),
-        "stocks_selected": scanner_state.stocks_selected or len(results) or 200,
-        "timeframe": timeframe,
-        "buy_count": buy_count,
-        "sell_count": sell_count,
-        "watch_count": watch_count,
-        "no_signal_count": no_signal_count,
-        "completed_at": completed_at,
-        "disclaimer": "Analysis only — no orders are placed automatically."
+        "scan_id": scan_id,
+        "status": "completed",
+        "stocks_scanned": scanner_manager.stocks_scanned or len(results),
+        "signals_found": len(results),
+        "results": results
     }
 
-# ----------------- Serve Frontend Static Build -----------------
+@app.get("/api/analysis/{symbol}")
+def analyze_stock(symbol: str, db: Session = Depends(get_db)):
+    """
+    Returns deep Screener-style fundamental analysis for an NSE stock,
+    including EPS, P/E, P/B, Market Cap, Strengths, Weaknesses,
+    Fundamental Rating, and Double Confirmation verdict with SMA 6 & 30.
+    """
+    clean_sym = symbol.strip().upper()
 
+    # Look up latest technical crossover signal for this stock
+    sma_signal = None
+    if scanner_manager.latest_results:
+        for r in scanner_manager.latest_results:
+            if r.get("Symbol") == clean_sym:
+                sma_signal = r.get("Signal Type")
+                break
+
+    if not sma_signal:
+        latest_res = (
+            db.query(ScanResult)
+            .filter(ScanResult.symbol == clean_sym)
+            .order_by(ScanResult.id.desc())
+            .first()
+        )
+        if latest_res:
+            sma_signal = latest_res.signal_type
+
+    from backend.analyzer import get_stock_analysis
+    return get_stock_analysis(clean_sym, sma_signal=sma_signal)
+
+
+# ----------------- Serve Frontend Static Build (SPA Fallback) -----------------
 frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if frontend_dist.exists():
     assets_dir = frontend_dist / "assets"
@@ -259,9 +226,10 @@ if frontend_dist.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        if full_path.startswith("api"):
-            raise HTTPException(status_code=404, detail="API route not found")
+        if full_path.startswith("api") or full_path == "health":
+            raise HTTPException(status_code=404, detail="Not found")
         file_path = frontend_dist / full_path
         if file_path.exists() and file_path.is_file():
             return FileResponse(file_path)
         return FileResponse(frontend_dist / "index.html")
+

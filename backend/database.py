@@ -1,67 +1,40 @@
 import logging
-from typing import Generator
-from sqlalchemy import create_engine, desc
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 from backend.config import settings
-from backend.models import Base, ScanRun, ScanResult, Signal
 
-logger = logging.getLogger("scanner.database")
+logger = logging.getLogger(__name__)
 
-def get_engine():
-    db_url = settings.normalized_database_url
-    if db_url.startswith("sqlite"):
-        return create_engine(
-            db_url,
-            connect_args={"check_same_thread": False},
-            echo=False
-        )
-    return create_engine(
-        db_url,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-        connect_args={"connect_timeout": 10},
-        echo=False
+# Engine configuration
+connect_args = {}
+if settings.DATABASE_URL.startswith("sqlite"):
+    connect_args = {"check_same_thread": False}
+else:
+    connect_args = {"sslmode": "require"} if "render.com" in settings.DATABASE_URL else {}
+
+try:
+    engine = create_engine(
+        settings.DATABASE_URL,
+        connect_args=connect_args,
+        pool_pre_ping=True
     )
+except Exception as e:
+    logger.error(f"Failed to initialize database engine with URL {settings.DATABASE_URL}: {e}")
+    # Fallback to local SQLite if PostgreSQL connection fails
+    logger.warning("Falling back to local SQLite engine (scanner.db)")
+    engine = create_engine("sqlite:///./scanner.db", connect_args={"check_same_thread": False})
 
-engine = get_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-def init_db():
-    """Create all tables if they do not exist."""
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database initialized successfully.")
-    except Exception as e:
-        logger.error("Failed to initialize database: %s", e)
-        raise
-
-def get_db() -> Generator[Session, None, None]:
-    """Dependency injection for FastAPI endpoints."""
+def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
-def cleanup_old_scans(db: Session, keep_latest: int = 5):
-    """
-    Cleans up older scan runs and associated results, keeping the latest N runs.
-    """
-    try:
-        recent_scan_ids = [
-            run.id for run in db.query(ScanRun.id)
-            .filter(ScanRun.status.in_(["COMPLETED", "RUNNING"]))
-            .order_by(desc(ScanRun.id))
-            .limit(keep_latest)
-            .all()
-        ]
-
-        if recent_scan_ids:
-            deleted = db.query(ScanRun).filter(~ScanRun.id.in_(recent_scan_ids)).delete(synchronize_session=False)
-            db.commit()
-            if deleted > 0:
-                logger.info("Cleaned up %d older scan runs from database.", deleted)
-    except Exception as e:
-        db.rollback()
-        logger.warning("Error during scan cleanup: %s", e)
+def init_db():
+    import backend.models  # noqa: F401
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables initialized successfully.")
