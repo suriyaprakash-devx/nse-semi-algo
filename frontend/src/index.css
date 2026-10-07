@@ -1,36 +1,41 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap');
 
-:root {
+:root,
+[data-theme="dark"] {
+  --theme-mode: 'dark';
+
   /* Typography */
   --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
-  /* Obsidian Terminal Color Hierarchy */
-  --bg-canvas: #051424;
-  --bg-primary: #070d18;
-  --bg-secondary: #0c1524;
-  --bg-surface-low: #0a1322;
-  --bg-surface-card: rgba(13, 25, 43, 0.72);
-  --bg-surface-card-hover: rgba(22, 38, 64, 0.75);
-  --bg-surface-high: #14243b;
-  --bg-surface-highest: #1c3250;
-  --bg-input: #08101d;
+  /* Obsidian Black Glass Theme Colors */
+  --bg-canvas: #050d18;
+  --bg-primary: #070f1e;
+  --bg-secondary: #0b1526;
+  --bg-surface-low: #081220;
+  --bg-surface-card: rgba(11, 22, 38, 0.65);
+  --bg-surface-card-hover: rgba(18, 34, 58, 0.78);
+  --bg-surface-high: #13243a;
+  --bg-surface-highest: #1a304e;
+  --bg-input: rgba(6, 14, 25, 0.78);
+  --bg-header: rgba(7, 16, 29, 0.85);
+  --bg-surface-modal: rgba(11, 20, 36, 0.95);
 
-  /* Borders & Outlines */
-  --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-medium: rgba(255, 255, 255, 0.12);
-  --border-active: rgba(0, 210, 255, 0.4);
-  --border-glow: rgba(0, 245, 160, 0.3);
+  /* Glass Borders & Accents */
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-medium: rgba(255, 255, 255, 0.14);
+  --border-active: rgba(0, 210, 255, 0.45);
+  --border-glow: rgba(0, 245, 160, 0.35);
 
   /* Typography Colors */
   --text-main: #f8fafc;
-  --text-sub: #d4e4fa;
+  --text-sub: #cbd5e1;
   --text-muted: #94a3b8;
   --text-faint: #64748b;
   --text-outline: #849588;
 
-  /* Semantic Quantitative Accents */
+  /* Accents */
   --accent-cyan: #00d2ff;
   --accent-cyan-dim: #38bdf8;
   --accent-blue: #3b82f6;
@@ -39,25 +44,36 @@
   /* Crossover Signals: Golden Cross (Bullish) */
   --bullish-base: #10b981;
   --bullish-neon: #00f5a0;
-  --bullish-bg: rgba(0, 245, 160, 0.1);
-  --bullish-border: rgba(0, 245, 160, 0.35);
+  --bullish-bg: rgba(0, 245, 160, 0.12);
+  --bullish-border: rgba(0, 245, 160, 0.38);
   --bullish-text: #00f5a0;
   --bullish-glow: 0 0 16px rgba(0, 245, 160, 0.25);
 
   /* Crossover Signals: Death Cross (Bearish) */
   --bearish-base: #f43f5e;
   --bearish-neon: #ff3366;
-  --bearish-bg: rgba(255, 51, 102, 0.1);
-  --bearish-border: rgba(255, 51, 102, 0.35);
+  --bearish-bg: rgba(255, 51, 102, 0.12);
+  --bearish-border: rgba(255, 51, 102, 0.38);
   --bearish-text: #ff3366;
   --bearish-glow: 0 0 16px rgba(255, 51, 102, 0.25);
 
   /* Warning / Neutral */
-  --warning-bg: rgba(245, 158, 11, 0.1);
+  --warning-bg: rgba(245, 158, 11, 0.12);
   --warning-text: #fbbf24;
-  --warning-border: rgba(251, 191, 36, 0.3);
+  --warning-border: rgba(251, 191, 36, 0.35);
 
-  /* Border Radius */
+  /* Glassmorphism Specs */
+  --glass-specular: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --glass-shadow: 0 12px 36px 0 rgba(0, 0, 0, 0.55);
+  --table-header-bg: rgba(14, 25, 42, 0.75);
+  --table-header-strip-bg: rgba(6, 14, 25, 0.7);
+  --table-border-row: rgba(255, 255, 255, 0.05);
+  --table-hover-row: rgba(0, 210, 255, 0.06);
+  --perfection-hero-bg: linear-gradient(135deg, rgba(13, 25, 43, 0.88) 0%, rgba(9, 18, 32, 0.96) 100%);
+  --modal-bg: rgba(10, 19, 34, 0.94);
+  --search-box-bg: rgba(6, 14, 25, 0.8);
+
+  /* Radius & Shadows */
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -65,9 +81,92 @@
   --radius-xl: 20px;
   --radius-full: 9999px;
 
-  /* Shadows */
   --shadow-card: 0 8px 32px -4px rgba(0, 0, 0, 0.65), 0 4px 12px -2px rgba(0, 0, 0, 0.5);
-  --shadow-elevated: 0 16px 40px -8px rgba(0, 0, 0, 0.8), 0 0 24px rgba(0, 210, 255, 0.12);
+  --shadow-elevated: 0 16px 40px -8px rgba(0, 0, 0, 0.8), 0 0 24px rgba(0, 210, 255, 0.15);
+}
+
+[data-theme="light"] {
+  --theme-mode: 'light';
+
+  /* Typography */
+  --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Frosted White Crystal Glass Theme Colors */
+  --bg-canvas: #f1f5f9;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8fafc;
+  --bg-surface-low: #f8fafc;
+  --bg-surface-card: rgba(255, 255, 255, 0.75);
+  --bg-surface-card-hover: rgba(255, 255, 255, 0.92);
+  --bg-surface-high: rgba(241, 245, 249, 0.88);
+  --bg-surface-highest: #e2e8f0;
+  --bg-input: rgba(255, 255, 255, 0.9);
+  --bg-header: rgba(255, 255, 255, 0.82);
+  --bg-surface-modal: rgba(255, 255, 255, 0.97);
+
+  /* Glass Borders & Accents */
+  --border-subtle: rgba(15, 23, 42, 0.08);
+  --border-medium: rgba(15, 23, 42, 0.14);
+  --border-active: rgba(2, 132, 199, 0.55);
+  --border-glow: rgba(16, 185, 129, 0.4);
+
+  /* Typography Colors */
+  --text-main: #0f172a;
+  --text-sub: #334155;
+  --text-muted: #64748b;
+  --text-faint: #94a3b8;
+  --text-outline: #475569;
+
+  /* Accents */
+  --accent-cyan: #0284c7;
+  --accent-cyan-dim: #0369a1;
+  --accent-blue: #2563eb;
+  --accent-indigo: #4f46e5;
+
+  /* Crossover Signals: Golden Cross (Bullish) */
+  --bullish-base: #059669;
+  --bullish-neon: #059669;
+  --bullish-bg: rgba(16, 185, 129, 0.14);
+  --bullish-border: rgba(16, 185, 129, 0.42);
+  --bullish-text: #059669;
+  --bullish-glow: 0 0 16px rgba(16, 185, 129, 0.2);
+
+  /* Crossover Signals: Death Cross (Bearish) */
+  --bearish-base: #e11d48;
+  --bearish-neon: #e11d48;
+  --bearish-bg: rgba(225, 29, 72, 0.14);
+  --bearish-border: rgba(225, 29, 72, 0.42);
+  --bearish-text: #e11d48;
+  --bearish-glow: 0 0 16px rgba(225, 29, 72, 0.2);
+
+  /* Warning / Neutral */
+  --warning-bg: rgba(217, 119, 6, 0.14);
+  --warning-text: #d97706;
+  --warning-border: rgba(217, 119, 6, 0.42);
+
+  /* Glassmorphism Specs */
+  --glass-specular: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 3px rgba(0, 0, 0, 0.05);
+  --glass-shadow: 0 12px 36px rgba(31, 38, 135, 0.08);
+  --table-header-bg: rgba(241, 245, 249, 0.9);
+  --table-header-strip-bg: rgba(248, 250, 252, 0.85);
+  --table-border-row: rgba(0, 0, 0, 0.06);
+  --table-hover-row: rgba(2, 132, 199, 0.06);
+  --perfection-hero-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.92) 0%, rgba(248, 250, 252, 0.96) 100%);
+  --modal-bg: rgba(255, 255, 255, 0.97);
+  --search-box-bg: rgba(255, 255, 255, 0.92);
+
+  /* Radius & Shadows */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-full: 9999px;
+
+  --shadow-card: 0 8px 30px rgba(0, 0, 0, 0.07), 0 2px 6px rgba(0, 0, 0, 0.04);
+  --shadow-elevated: 0 16px 40px rgba(0, 0, 0, 0.12), 0 0 20px rgba(2, 132, 199, 0.1);
 }
 
 * {
@@ -79,18 +178,36 @@
 body {
   font-family: var(--font-body);
   background-color: var(--bg-canvas);
-  background-image:
-    radial-gradient(circle at 10% 10%, rgba(0, 210, 255, 0.05) 0%, transparent 45%),
-    radial-gradient(circle at 90% 15%, rgba(0, 245, 160, 0.05) 0%, transparent 40%),
-    radial-gradient(circle at 50% 90%, rgba(99, 102, 241, 0.04) 0%, transparent 50%),
-    linear-gradient(to right, rgba(59, 74, 64, 0.08) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(59, 74, 64, 0.08) 1px, transparent 1px);
-  background-size: auto, auto, auto, 32px 32px, 32px 32px;
-  background-attachment: fixed;
   color: var(--text-main);
   min-height: 100vh;
+  transition: background-color 0.3s ease, color 0.3s ease;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Background Gradients for Black Glass */
+[data-theme="dark"] body,
+body {
+  background-image:
+    radial-gradient(circle at 10% 10%, rgba(0, 210, 255, 0.06) 0%, transparent 45%),
+    radial-gradient(circle at 90% 15%, rgba(0, 245, 160, 0.06) 0%, transparent 40%),
+    radial-gradient(circle at 50% 90%, rgba(99, 102, 241, 0.05) 0%, transparent 50%),
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: auto, auto, auto, 32px 32px, 32px 32px;
+  background-attachment: fixed;
+}
+
+/* Background Gradients for White Glass */
+[data-theme="light"] body {
+  background-image:
+    radial-gradient(circle at 10% 10%, rgba(2, 132, 199, 0.08) 0%, transparent 45%),
+    radial-gradient(circle at 90% 15%, rgba(16, 185, 129, 0.08) 0%, transparent 40%),
+    radial-gradient(circle at 50% 90%, rgba(99, 102, 241, 0.06) 0%, transparent 50%),
+    linear-gradient(to right, rgba(0, 0, 0, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.03) 1px, transparent 1px);
+  background-size: auto, auto, auto, 32px 32px, 32px 32px;
+  background-attachment: fixed;
 }
 
 /* Tabular Numerics for Zero-Jitter Realtime Ticks */
@@ -100,19 +217,38 @@ body {
   font-feature-settings: "tnum" 1, "zero" 1;
 }
 
-/* Glassmorphism Containers */
+/* Glassmorphism Containers with Specular Refraction (Stitch MCP Design System) */
 .glass-panel {
+  position: relative;
   background: var(--bg-surface-card);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border-subtle);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--border-medium);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: var(--glass-shadow), var(--glass-specular);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, background 0.3s ease;
+  overflow: hidden;
 }
 
 .glass-panel:hover {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: var(--border-active);
+  box-shadow: var(--glass-shadow), 0 0 20px rgba(0, 210, 255, 0.16);
+}
+
+/* Specular edge top reflection */
+.specular-edge {
+  position: absolute;
+  top: 0;
+  left: 8%;
+  right: 8%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+  pointer-events: none;
+  z-index: 1;
+}
+
+[data-theme="light"] .specular-edge {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.95), transparent);
 }
 
 /* Glow Utility Classes */
@@ -160,7 +296,7 @@ body {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #00f5a0 0%, #00b475 100%);
+  background: linear-gradient(135deg, var(--bullish-neon) 0%, #00b475 100%);
   color: #051424;
   font-weight: 700;
   border-color: rgba(0, 245, 160, 0.4);
@@ -174,13 +310,15 @@ body {
 
 .btn-secondary {
   background: var(--bg-surface-high);
-  color: var(--text-sub);
+  color: var(--text-main);
   border: 1px solid var(--border-medium);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .btn-secondary:hover:not(:disabled) {
   background: var(--bg-surface-highest);
-  color: #ffffff;
+  color: var(--text-main);
   border-color: var(--accent-cyan);
 }
 
@@ -211,16 +349,16 @@ input:focus, select:focus, textarea:focus {
 }
 
 ::-webkit-scrollbar-track {
-  background: #051424;
+  background: var(--bg-canvas);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1c3250;
+  background: var(--border-medium);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #00d2ff;
+  background: var(--accent-cyan);
 }
 
 /* Animations */

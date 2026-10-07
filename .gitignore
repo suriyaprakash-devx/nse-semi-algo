@@ -28,6 +28,7 @@ wheels/
 *.sqlite3
 data/*.json
 !data/.gitkeep
+!data/nse_fundamentals_database.json
 *.log
 temp_remote_check/
 
