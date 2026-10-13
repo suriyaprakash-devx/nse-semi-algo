@@ -130,7 +130,7 @@ async def _fetch_constituent_csv(urls: List[str]) -> List[Tuple[str, str, str]]:
         "Accept": "text/html,application/xhtml+xml,text/csv,*/*"
     }
 
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=3.5, follow_redirects=True) as client:
         for url in urls:
             try:
                 resp = await client.get(url, headers=headers)

@@ -31,7 +31,15 @@ class ScannerManager:
         self.error: Optional[str] = None
         self.latest_dataframe: Optional[pd.DataFrame] = None
         self.latest_results: List[Dict[str, Any]] = []
+        self.stop_requested: bool = False
         self._lock = asyncio.Lock()
+
+    def stop_scan(self):
+        """Signals the running scanner to abort immediately."""
+        if self.is_running:
+            self.stop_requested = True
+            self.progress_message = "Scan stopping..."
+            logger.info("Scan stop requested by user.")
 
     def get_status(self) -> Dict[str, Any]:
         return {
@@ -48,6 +56,7 @@ class ScannerManager:
     async def run_scan(self, access_token: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Executes the full NIFTY 100 + NIFTY 200 SMA 6 & 30 crossover scan.
+        Supports both official Upstox API v2 and real-time live market feed fallback.
         """
         async with self._lock:
             if self.is_running:
@@ -55,6 +64,7 @@ class ScannerManager:
                 return self.latest_results
 
             self.is_running = True
+            self.stop_requested = False
             self.status = "running"
             self.stocks_scanned = 0
             self.total_stocks = 0
@@ -81,55 +91,125 @@ class ScannerManager:
                 raise RuntimeError("Failed to build stock universe: No valid stocks found.")
 
             self.total_stocks = len(universe)
-            self.progress_message = f"Mapping Upstox instruments ({self.total_stocks} stocks)..."
+            mode_desc = "Upstox API v2" if access_token else "Real-Time Live Market Feed"
+            self.progress_message = f"Scanning {self.total_stocks} stocks via {mode_desc}..."
             logger.info(self.progress_message)
+
+            # Pre-load cache fallback if available
+            cache_stocks_map = {}
+            from pathlib import Path
+            import json
+            cache_file = Path("./data/scanner_data_cache.json")
+            if cache_file.exists():
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        cdata = json.load(f)
+                    for s in cdata.get("stocks", []):
+                        sym = s.get("symbol", "").upper()
+                        if sym:
+                            cache_stocks_map[sym] = s.get("daily_candles", [])
+                except Exception as e:
+                    logger.debug(f"Cache pre-read notice: {e}")
 
             # Step 2: Concurrently scan all stocks with semaphore rate-limiting
             semaphore = asyncio.Semaphore(settings.SCAN_CONCURRENCY)
             detected_signals: List[Dict[str, Any]] = []
 
             async def scan_single_stock(stock: Dict[str, str]):
-                symbol = stock["symbol"]
+                symbol = stock["symbol"].upper()
                 company = stock["company"]
                 instrument_key = stock["instrument_key"]
 
                 async with semaphore:
-                    try:
-                        candles = await upstox_client_manager.fetch_historical_daily_candles(
-                            instrument_key=instrument_key,
-                            days_back=120,
-                            access_token=access_token,
-                            include_current_day=settings.INCLUDE_CURRENT_DAY_CANDLE
-                        )
+                    if self.stop_requested:
+                        return None
 
-                        if not candles or len(candles) < 31:
-                            logger.debug(f"Insufficient candles for {symbol} ({len(candles) if candles else 0} candles). Skipping.")
+                    try:
+                        candles = None
+                        if access_token:
+                            try:
+                                candles = await upstox_client_manager.fetch_historical_daily_candles(
+                                    instrument_key=instrument_key,
+                                    symbol=symbol,
+                                    days_back=120,
+                                    access_token=access_token,
+                                    include_current_day=settings.INCLUDE_CURRENT_DAY_CANDLE
+                                )
+                            except HTTPException_401:
+                                # Fall through to live feed fallback below
+                                candles = None
+
+                        if self.stop_requested:
                             return None
 
-                        # Analyze candles for SMA 6 & SMA 30 crossover
+                        # Fallback to cache + live candle if Upstox candles not available
+                        if not candles or len(candles) < 31:
+                            cached_candles = cache_stocks_map.get(symbol, [])
+                            if cached_candles:
+                                # Format cached candles into Upstox format [timestamp, open, high, low, close, volume, 0]
+                                # Note: cached candles are oldest-to-newest, while Upstox expects newest-first
+                                upstox_formatted = []
+                                for c in reversed(cached_candles):
+                                    dt = c.get("date", "")
+                                    upstox_formatted.append([
+                                        f"{dt}T00:00:00+05:30",
+                                        c.get("open", 0.0),
+                                        c.get("high", 0.0),
+                                        c.get("low", 0.0),
+                                        c.get("close", 0.0),
+                                        c.get("volume", 0),
+                                        0
+                                    ])
+
+                                # Incorporate today's live candle if requested
+                                if settings.INCLUDE_CURRENT_DAY_CANDLE:
+                                    try:
+                                        from backend.live_feed import get_today_live_candle
+                                        live_c = await get_today_live_candle(symbol)
+                                        if live_c:
+                                            # Check if today's date already exists in the candles
+                                            today_tag = live_c[0][:10]
+                                            if not any(cand[0].startswith(today_tag) for cand in upstox_formatted):
+                                                upstox_formatted.insert(0, live_c)
+                                    except Exception as e:
+                                        logger.debug(f"Live candle fetch notice for {symbol}: {e}")
+
+                                candles = upstox_formatted
+
+                        if self.stop_requested:
+                            return None
+
+                        if not candles or len(candles) < 31:
+                            logger.debug(f"Insufficient candles for {symbol}. Skipping.")
+                            return None
+
+                        # Analyze candles for confirmed SMA 6 & SMA 30 crossover
                         signal_info = self._detect_crossover(symbol, company, candles)
                         return signal_info
 
-                    except HTTPException_401:
-                        raise
                     except Exception as e:
-                        logger.warning(f"Unable to retrieve historical data for {symbol}: {e}. Skipping stock and continuing scan.")
+                        logger.warning(f"Unable to retrieve data for {symbol}: {e}. Skipping stock.")
                         return None
                     finally:
                         self.stocks_scanned += 1
-                        if self.stocks_scanned % 10 == 0 or self.stocks_scanned == self.total_stocks:
+                        if self.stop_requested:
+                            self.progress_message = f"Scan stopped by user ({self.stocks_scanned} / {self.total_stocks})"
+                        elif self.stocks_scanned % 10 == 0 or self.stocks_scanned == self.total_stocks:
                             self.progress_message = f"Scanning {self.stocks_scanned} / {self.total_stocks}"
 
             tasks = [scan_single_stock(stock) for stock in universe]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for res in results:
-                if isinstance(res, HTTPException_401):
-                    raise res
-                elif isinstance(res, Exception):
+                if isinstance(res, Exception):
                     logger.warning(f"Stock scan error: {res}")
                 elif res:
                     detected_signals.append(res)
+
+            if self.stop_requested:
+                self.status = "stopped"
+                self.progress_message = f"Scan stopped by user. Scanned {self.stocks_scanned} stocks, found {len(detected_signals)} crossovers."
+                logger.info(self.progress_message)
 
             # Step 3: Rank by latest crossover date
             self.progress_message = "Ranking signals and generating DataFrame..."
@@ -170,15 +250,6 @@ class ScannerManager:
             logger.info(self.progress_message)
             return self.latest_results
 
-        except HTTPException_401 as e:
-            self.status = "failed"
-            self.error = "Upstox authentication expired. Please reconnect your Upstox account."
-            self.progress_message = self.error
-            scan_run.status = "failed"
-            scan_run.error_message = self.error
-            db.commit()
-            raise
-
         except Exception as e:
             logger.exception(f"Fatal error during scanner run: {e}")
             self.status = "failed"
@@ -200,10 +271,16 @@ class ScannerManager:
         candles: List[List[Any]]
     ) -> Optional[Dict[str, Any]]:
         """
-        Calculates SMA 6 and SMA 30 of completed candles.
+        Calculates SMA 6 and SMA 30 on daily candles.
         Detects the most recent confirmed crossover:
-        - Bullish: prev(SMA6) <= prev(SMA30) and curr(SMA6) > curr(SMA30) -> BULLISH
-        - Bearish: prev(SMA6) >= prev(SMA30) and curr(SMA6) < curr(SMA30) -> BEARISH
+        - Bullish Golden Cross: prev(SMA6) <= prev(SMA30) and curr(SMA6) > curr(SMA30) -> BULLISH
+        - Bearish Death Cross:  prev(SMA6) >= prev(SMA30) and curr(SMA6) < curr(SMA30) -> BEARISH
+
+        Fixes logical errors:
+        1. Accurately reports true CURRENT CLOSE (LTP), CURRENT SMA 6, and CURRENT SMA 30.
+        2. Validates that current trend has not reversed (invalidation check).
+        3. Enforces an active lookback window (up to 25 trading days) to eliminate stale ancient crossovers.
+        4. Provides Crossover Price, Days Ago, Freshness, and Spread %.
         """
         # Upstox returns candles [timestamp, open, high, low, close, volume, oi] with newest first
         # Reverse to chronological order (oldest to newest)
@@ -217,13 +294,22 @@ class ScannerManager:
         df["sma6"] = df["close"].rolling(window=6).mean()
         df["sma30"] = df["close"].rolling(window=30).mean()
 
-        # Find the most recent crossover starting backwards from the latest candle
-        # We need at least 30 candles for SMA 30
         n = len(df)
         if n < 31:
             return None
 
-        for i in range(n - 1, 29, -1):
+        # Latest live market values
+        latest_close = float(df.at[n - 1, "close"])
+        latest_sma6 = float(df.at[n - 1, "sma6"])
+        latest_sma30 = float(df.at[n - 1, "sma30"])
+
+        if pd.isna(latest_close) or pd.isna(latest_sma6) or pd.isna(latest_sma30):
+            return None
+
+        # Lookback limit of 25 trading days
+        min_lookback = max(29, n - 26)
+
+        for i in range(n - 1, min_lookback, -1):
             prev_s6 = df.at[i - 1, "sma6"]
             prev_s30 = df.at[i - 1, "sma30"]
             curr_s6 = df.at[i, "sma6"]
@@ -232,31 +318,63 @@ class ScannerManager:
             if pd.isna(prev_s6) or pd.isna(prev_s30) or pd.isna(curr_s6) or pd.isna(curr_s30):
                 continue
 
-            # Bullish crossover
+            days_ago = (n - 1) - i
+
+            # Bullish Golden Crossover
             if prev_s6 <= prev_s30 and curr_s6 > curr_s30:
+                # Invalidation check: Today's SMA6 must still be >= SMA30 for trend to remain active
+                if latest_sma6 < latest_sma30:
+                    continue
+                # Accuracy check: Current price must not be collapsed below SMA 30 (whipsaw filter)
+                if latest_close < latest_sma30 * 0.97:
+                    continue
+
                 crossover_date = df.at[i, "timestamp"].strftime("%Y-%m-%d")
+                crossover_price = round(float(df.at[i, "close"]), 2)
+                spread_pct = round(((latest_sma6 - latest_sma30) / latest_sma30) * 100, 2)
+                freshness = "FRESH" if days_ago <= 1 else ("RECENT" if days_ago <= 5 else "ACTIVE")
+
                 return {
                     "Symbol": symbol,
                     "Company": company,
                     "Signal Type": "BULLISH",
                     "Crossover Date": crossover_date,
-                    "Close": round(float(df.at[i, "close"]), 2),
-                    "SMA 6": round(float(curr_s6), 2),
-                    "SMA 30": round(float(curr_s30), 2),
+                    "Close": round(latest_close, 2),        # TRUE CURRENT CLOSE (LTP)
+                    "SMA 6": round(latest_sma6, 2),          # TRUE CURRENT SMA 6
+                    "SMA 30": round(latest_sma30, 2),        # TRUE CURRENT SMA 30
+                    "Crossover Price": crossover_price,      # Price at crossover
+                    "Days Ago": days_ago,
+                    "Freshness": freshness,
+                    "Spread Pct": spread_pct,
                     "_sort_date": df.at[i, "timestamp"]
                 }
 
-            # Bearish crossover
+            # Bearish Death Crossover
             if prev_s6 >= prev_s30 and curr_s6 < curr_s30:
+                # Invalidation check: Today's SMA6 must still be <= SMA30 for trend to remain active
+                if latest_sma6 > latest_sma30:
+                    continue
+                # Accuracy check: Current price must not be rebounded above SMA 30 (whipsaw filter)
+                if latest_close > latest_sma30 * 1.03:
+                    continue
+
                 crossover_date = df.at[i, "timestamp"].strftime("%Y-%m-%d")
+                crossover_price = round(float(df.at[i, "close"]), 2)
+                spread_pct = round(((latest_sma6 - latest_sma30) / latest_sma30) * 100, 2)
+                freshness = "FRESH" if days_ago <= 1 else ("RECENT" if days_ago <= 5 else "ACTIVE")
+
                 return {
                     "Symbol": symbol,
                     "Company": company,
                     "Signal Type": "BEARISH",
                     "Crossover Date": crossover_date,
-                    "Close": round(float(df.at[i, "close"]), 2),
-                    "SMA 6": round(float(curr_s6), 2),
-                    "SMA 30": round(float(curr_s30), 2),
+                    "Close": round(latest_close, 2),        # TRUE CURRENT CLOSE (LTP)
+                    "SMA 6": round(latest_sma6, 2),          # TRUE CURRENT SMA 6
+                    "SMA 30": round(latest_sma30, 2),        # TRUE CURRENT SMA 30
+                    "Crossover Price": crossover_price,      # Price at crossover
+                    "Days Ago": days_ago,
+                    "Freshness": freshness,
+                    "Spread Pct": spread_pct,
                     "_sort_date": df.at[i, "timestamp"]
                 }
 
@@ -286,7 +404,11 @@ class ScannerManager:
                 "Crossover Date": item["Crossover Date"],
                 "Close": item["Close"],
                 "SMA 6": item["SMA 6"],
-                "SMA 30": item["SMA 30"]
+                "SMA 30": item["SMA 30"],
+                "Crossover Price": item.get("Crossover Price", item["Close"]),
+                "Days Ago": item.get("Days Ago", 0),
+                "Freshness": item.get("Freshness", "ACTIVE"),
+                "Spread Pct": item.get("Spread Pct", 0.0)
             }
             ranked.append(entry)
 
@@ -298,3 +420,4 @@ class ScannerManager:
         return ranked, df
 
 scanner_manager = ScannerManager()
+

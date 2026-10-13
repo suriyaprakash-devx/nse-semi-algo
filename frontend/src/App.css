@@ -101,28 +101,9 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-right: 12px;
-  border-right: 1px solid var(--border-medium);
   color: var(--bullish-text);
   font-weight: 700;
   font-family: var(--font-mono);
-}
-
-.market-ticker-item {
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.market-ticker-val {
-  color: var(--text-main);
-  font-weight: 600;
-}
-
-.market-ticker-up {
-  color: var(--bullish-text);
-  font-size: 0.7rem;
 }
 
 /* Header Actions */
@@ -144,15 +125,6 @@
   font-size: 0.78rem;
 }
 
-.gateway-latency {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  color: var(--accent-cyan);
-  background: rgba(0, 210, 255, 0.12);
-  padding: 1px 6px;
-  border-radius: 3px;
-  border: 1px solid rgba(0, 210, 255, 0.25);
-}
 
 .theme-toggle-btn {
   background: var(--bg-surface-card);

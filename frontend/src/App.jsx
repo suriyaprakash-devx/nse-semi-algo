@@ -23,20 +23,16 @@ import {
   Microscope,
   Award,
   AlertTriangle,
-  ArrowRight,
   Check,
   X,
   Zap,
-  Activity,
   Maximize2,
-  Radio,
-  SlidersHorizontal,
-  Compass,
-  FileSpreadsheet,
   Sun,
-  Moon
+  Moon,
+  Square
 } from 'lucide-react'
 import './App.css'
+import AlgoSignals from './AlgoSignals'
 
 // Dynamic API Base URL configuration for Render deployment (supports both unified and separate services)
 const RAW_API_URL = import.meta.env.VITE_API_URL || ''
@@ -101,7 +97,6 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [errorMessage, setErrorMessage] = useState(null)
   const [successMessage, setSuccessMessage] = useState(null)
-  const [universeFilter, setUniverseFilter] = useState('NIFTY_200') // NIFTY_200, NIFTY_100
 
   // Real-time clock for telemetry
   const [currentTime, setCurrentTime] = useState(new Date())
@@ -127,6 +122,7 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState([])
   const [leaderboardLoading, setLeaderboardLoading] = useState(false)
   const [leaderboardFilter, setLeaderboardFilter] = useState('ALL') // ALL, PERFECT, BULLISH
+  const [algoSymbol, setAlgoSymbol] = useState('RELIANCE')
 
   const POPULAR_STOCKS = ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'TATAMOTORS', 'SBIN', 'ITC', 'BHARTIARTL', 'LT', 'ICICIBANK']
 
@@ -263,6 +259,22 @@ export default function App() {
       }))
     } catch (err) {
       setErrorMessage(err.message)
+    }
+  }
+
+  // Trigger Scanner Stop
+  const handleStopScanner = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/scanner/stop`, { method: 'POST' })
+      if (res.ok) {
+        setSuccessMessage('Scan abort initiated.')
+      } else {
+        const err = await res.json().catch(() => ({}))
+        setErrorMessage(err.message || 'Failed to stop scanner.')
+      }
+    } catch (err) {
+      console.error('Failed to stop scanner:', err)
+      setErrorMessage('Failed to send scanner stop request.')
     }
   }
 
@@ -462,6 +474,11 @@ export default function App() {
     loadStockPerfection(symbol)
   }
 
+  const navigateToAlgoSignals = (symbol) => {
+    setAlgoSymbol(symbol)
+    setActiveApp('algo_signals')
+  }
+
   const filteredLeaderboard = useMemo(() => {
     let list = [...leaderboard]
     if (leaderboardFilter === 'PERFECT') {
@@ -549,6 +566,21 @@ export default function App() {
   // Count summaries
   const bullishCount = useMemo(() => results.filter(r => r['Signal Type'] === 'BULLISH').length, [results])
   const bearishCount = useMemo(() => results.filter(r => r['Signal Type'] === 'BEARISH').length, [results])
+
+  const freshBullishCount = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10)
+    return results.filter(r => r['Signal Type'] === 'BULLISH' && (r.Freshness === 'FRESH' || r['Days Ago'] <= 1 || r['Crossover Date'] === todayStr)).length
+  }, [results])
+
+  const freshBearishCount = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10)
+    return results.filter(r => r['Signal Type'] === 'BEARISH' && (r.Freshness === 'FRESH' || r['Days Ago'] <= 1 || r['Crossover Date'] === todayStr)).length
+  }, [results])
+
+  const freshTotalCount = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10)
+    return results.filter(r => r.Freshness === 'FRESH' || r['Days Ago'] <= 1 || r['Crossover Date'] === todayStr).length
+  }, [results])
 
   // Initial loading spinner
   if (authStatus.loading) {
@@ -813,29 +845,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* Live Market Telemetry Strip */}
+        {/* Market Status Strip */}
         <div className="market-ticker-strip">
           <div className="market-status-badge">
             <span className="pulse-beacon" style={{ backgroundColor: 'var(--bullish-neon)' }} />
-            <span>NSE LIVE</span>
-            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400 }}>09:15-15:30 IST</span>
-          </div>
-          <div className="market-ticker-item font-mono">
-            <span>NIFTY 50:</span>
-            <span className="market-ticker-val">22,548.80</span>
-            <span className="market-ticker-up">(+0.64%)</span>
-          </div>
-          <span style={{ color: 'var(--border-medium)' }}>•</span>
-          <div className="market-ticker-item font-mono">
-            <span>BANKNIFTY:</span>
-            <span className="market-ticker-val">48,120.45</span>
-            <span className="market-ticker-up">(+0.82%)</span>
-          </div>
-          <span style={{ color: 'var(--border-medium)' }}>•</span>
-          <div className="market-ticker-item font-mono">
-            <span>INDIA VIX:</span>
-            <span className="market-ticker-val">12.84</span>
-            <span style={{ color: 'var(--bullish-text)', fontSize: '0.7rem' }}>(-3.60%)</span>
+            <span>NSE MARKET HOURS</span>
+            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400 }}>09:15 - 15:30 IST</span>
           </div>
         </div>
 
@@ -866,7 +881,6 @@ export default function App() {
           <div className="gateway-status-pill">
             <span className="pulse-beacon" style={{ backgroundColor: 'var(--bullish-neon)' }} />
             <span style={{ color: 'var(--bullish-text)', fontWeight: 600 }}>Upstox Connected</span>
-            <span className="gateway-latency">18ms</span>
             {authStatus.user_name && (
               <span style={{ color: 'var(--text-muted)', borderLeft: '1px solid var(--border-subtle)', paddingLeft: '8px' }}>
                 {authStatus.user_name}
@@ -929,6 +943,14 @@ export default function App() {
           <Award size={16} />
           <span>3️⃣ Stock Perfection Score</span>
           <span className="app-mode-badge gold">100-Pt Quant Engine</span>
+        </button>
+        <button
+          className={`app-mode-btn ${activeApp === 'algo_signals' ? 'active' : ''}`}
+          onClick={() => setActiveApp('algo_signals')}
+        >
+          <Zap size={16} />
+          <span>4️⃣ Algo Signals</span>
+          <span className="app-mode-badge gold">AI Swing v4.0</span>
         </button>
       </nav>
 
@@ -1003,7 +1025,7 @@ export default function App() {
               </div>
               <div className="stat-footer-bar">
                 <span style={{ color: 'var(--bullish-text)' }}>SMA 6 &gt; SMA 30 Confirmed</span>
-                <span className="font-mono" style={{ color: 'var(--bullish-text)' }}>+33% vs yday</span>
+                <span className="font-mono" style={{ color: 'var(--bullish-neon)', fontWeight: 600 }}>{freshBullishCount} Fresh (≤ 1d)</span>
               </div>
               <div className="stat-progress-track">
                 <div className="stat-progress-fill" style={{ width: `${results.length ? (bullishCount / results.length) * 100 : 0}%`, background: 'var(--bullish-neon)' }} />
@@ -1026,7 +1048,7 @@ export default function App() {
               </div>
               <div className="stat-footer-bar">
                 <span style={{ color: 'var(--bearish-text)' }}>SMA 6 &lt; SMA 30 Confirmed</span>
-                <span className="font-mono" style={{ color: 'var(--bearish-text)' }}>-12% vs yday</span>
+                <span className="font-mono" style={{ color: 'var(--bearish-neon)', fontWeight: 600 }}>{freshBearishCount} Fresh (≤ 1d)</span>
               </div>
               <div className="stat-progress-track">
                 <div className="stat-progress-fill" style={{ width: `${results.length ? (bearishCount / results.length) * 100 : 0}%`, background: 'var(--bearish-neon)' }} />
@@ -1051,15 +1073,6 @@ export default function App() {
                 <span>{lastScanTime ? `Last scan: ${lastScanTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Awaiting manual trigger'}</span>
                 <span style={{ color: 'var(--accent-cyan)' }}>Live Ticks</span>
               </div>
-              <button
-                className="btn btn-secondary"
-                onClick={handleRunScanner}
-                disabled={scanStatus.is_running}
-                style={{ marginTop: '6px', padding: '5px 10px', fontSize: '0.74rem', width: '100%', gap: '6px' }}
-              >
-                <RotateCw className={scanStatus.is_running ? 'animate-spin' : ''} size={12} />
-                <span>Force Trigger Scan</span>
-              </button>
             </div>
           </section>
 
@@ -1071,9 +1084,31 @@ export default function App() {
                   <RotateCw className="animate-spin" size={16} style={{ color: 'var(--accent-cyan)' }} />
                   <span style={{ fontWeight: 600, fontSize: '0.86rem' }}>{scanStatus.progress_message}</span>
                 </div>
-                <span className="font-mono" style={{ color: 'var(--accent-cyan)', fontWeight: 700, fontSize: '0.9rem' }}>
-                  {progressPercent}%
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <span className="font-mono" style={{ color: 'var(--accent-cyan)', fontWeight: 700, fontSize: '0.9rem' }}>
+                    {progressPercent}%
+                  </span>
+                  <button
+                    className="btn btn-danger"
+                    onClick={handleStopScanner}
+                    style={{
+                      padding: '4px 12px',
+                      fontSize: '0.74rem',
+                      background: 'rgba(239, 68, 68, 0.2)',
+                      border: '1px solid rgba(239, 68, 68, 0.6)',
+                      color: '#ff6b6b',
+                      borderRadius: '4px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      cursor: 'pointer'
+                    }}
+                    title="Stop scan immediately"
+                  >
+                    <Square size={12} fill="currentColor" />
+                    <span>Stop</span>
+                  </button>
+                </div>
               </div>
               <div className="progress-bar-bg">
                 <div className="progress-bar-fill" style={{ width: `${progressPercent}%` }} />
@@ -1104,6 +1139,30 @@ export default function App() {
                   </>
                 )}
               </button>
+
+              {/* Stop Scan Button */}
+              {scanStatus.is_running && (
+                <button
+                  id="btn-stop-scanner"
+                  className="btn btn-danger"
+                  onClick={handleStopScanner}
+                  style={{
+                    padding: '8px 18px',
+                    fontSize: '0.85rem',
+                    background: 'rgba(239, 68, 68, 0.2)',
+                    border: '1px solid rgba(239, 68, 68, 0.6)',
+                    color: '#ff6b6b',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    cursor: 'pointer'
+                  }}
+                  title="Stop ongoing scanner immediately"
+                >
+                  <Square size={14} fill="currentColor" />
+                  <span>Stop Scan</span>
+                </button>
+              )}
 
               {/* Search Box */}
               <div className="search-box">
@@ -1142,23 +1201,12 @@ export default function App() {
                   className={`filter-pill ${signalFilter === 'FRESH' ? 'active' : ''}`}
                   onClick={() => setSignalFilter('FRESH')}
                 >
-                  Fresh Today
+                  Fresh Today ({freshTotalCount})
                 </button>
               </div>
             </div>
 
             <div className="toolbar-right">
-              {/* Universe Selector Dropdown */}
-              <select
-                className="btn btn-secondary"
-                value={universeFilter}
-                onChange={(e) => setUniverseFilter(e.target.value)}
-                style={{ padding: '7px 10px', fontSize: '0.78rem', cursor: 'pointer' }}
-              >
-                <option value="NIFTY_200">Universe: NIFTY 100+200</option>
-                <option value="NIFTY_100">Universe: NIFTY 100 Only</option>
-              </select>
-
               {/* Refresh Button */}
               <button
                 id="btn-refresh-results"
@@ -1309,10 +1357,24 @@ export default function App() {
                             </span>
                           </td>
                           <td className="font-mono" style={{ color: 'var(--text-sub)', fontSize: '0.78rem' }}>
-                            {item['Crossover Date']}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span>{item['Crossover Date']}</span>
+                              {item.Freshness === 'FRESH' || item['Days Ago'] <= 1 ? (
+                                <span style={{ background: 'rgba(0, 245, 155, 0.15)', color: 'var(--bullish-neon)', border: '1px solid rgba(0, 245, 155, 0.3)', borderRadius: '4px', padding: '1px 5px', fontSize: '0.66rem', fontWeight: 700 }}>
+                                  FRESH
+                                </span>
+                              ) : item['Days Ago'] ? (
+                                <span style={{ fontSize: '0.70rem', color: 'var(--text-faint)' }}>{item['Days Ago']}d ago</span>
+                              ) : null}
+                            </div>
                           </td>
                           <td className="font-mono" style={{ textAlign: 'right', fontWeight: 700, color: '#ffffff', fontSize: '0.88rem' }}>
-                            ₹{item.Close.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            <div>₹{item.Close.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            {item['Crossover Price'] && item['Crossover Price'] !== item.Close && (
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-faint)', fontWeight: 400 }}>
+                                Cross: ₹{item['Crossover Price'].toFixed(2)}
+                              </div>
+                            )}
                           </td>
                           <td
                             className="font-mono"
@@ -1367,6 +1429,13 @@ export default function App() {
                                 title="Inspect 100-Point Stock Perfection Score (Step 3)"
                               >
                                 <Award size={13} style={{ color: '#fbbf24' }} />
+                              </button>
+                              <button
+                                className="action-icon-btn"
+                                onClick={() => navigateToAlgoSignals(item.Symbol)}
+                                title="AI Swing Trading System v4.0 (Step 4)"
+                              >
+                                <Zap size={13} style={{ color: 'var(--bullish-neon)' }} />
                               </button>
                             </div>
                           </td>
@@ -2158,6 +2227,13 @@ export default function App() {
       )}
 
       {/* ========================================================================= */}
+      {/* APP 4: ALGO SIGNALS (AI SWING TRADING SYSTEM v4.0)                        */}
+      {/* ========================================================================= */}
+      {activeApp === 'algo_signals' && (
+        <AlgoSignals apiBase={API_BASE} initialSymbol={algoSymbol} />
+      )}
+
+      {/* ========================================================================= */}
       {/* MODAL 1: STOCK DETAIL INSPECTOR & CROSSOVER BREAKDOWN                     */}
       {/* ========================================================================= */}
       {selectedStock && (
@@ -2259,6 +2335,19 @@ export default function App() {
                 >
                   <Award size={15} style={{ color: '#fbbf24' }} />
                   <span>Perfection Score (Step 3)</span>
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  style={{ gap: '6px' }}
+                  onClick={() => {
+                    const sym = selectedStock.Symbol
+                    setSelectedStock(null)
+                    navigateToAlgoSignals(sym)
+                  }}
+                  title="Run AI Swing Trading Model v4.0"
+                >
+                  <Zap size={15} style={{ color: 'var(--bullish-neon)' }} />
+                  <span>AI Swing (Step 4)</span>
                 </button>
                 <a
                   className="btn btn-secondary"
@@ -2369,8 +2458,6 @@ export default function App() {
         <div className="footer-left">
           <span className="pulse-beacon" style={{ backgroundColor: 'var(--bullish-neon)' }} />
           <span>Upstox WebSocket V2 Protocol</span>
-          <span style={{ color: 'var(--border-medium)' }}>•</span>
-          <span style={{ color: 'var(--bullish-text)' }}>0 Dropped Packets</span>
           <span style={{ color: 'var(--border-medium)' }}>•</span>
           <span style={{ color: 'var(--accent-cyan)' }}>Quant Engine Online</span>
         </div>

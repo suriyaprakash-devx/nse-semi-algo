@@ -175,6 +175,7 @@ class UpstoxClientManager:
     async def fetch_historical_daily_candles(
         self,
         instrument_key: str,
+        symbol: Optional[str] = None,
         days_back: int = 100,
         access_token: Optional[str] = None,
         include_current_day: bool = True
@@ -232,9 +233,9 @@ class UpstoxClientManager:
                 today_str = now.strftime("%Y-%m-%d")
                 has_today = any(c[0].startswith(today_str) for c in candles)
 
-                # Only fetch intraday if today is a weekday (Mon-Fri) and today's candle is not in daily data
-                if not has_today and now.weekday() < 5:
-                    today_candle = await self._fetch_current_day_candle(client, encoded_key, headers, today_str)
+                # Fetch today's candle if not in historical data
+                if not has_today:
+                    today_candle = await self._fetch_current_day_candle(client, encoded_key, headers, today_str, symbol=symbol)
                     if today_candle:
                         # Prepend today's candle (since Upstox returns newest candle first)
                         candles.insert(0, today_candle)
@@ -246,11 +247,12 @@ class UpstoxClientManager:
         client: httpx.AsyncClient,
         encoded_key: str,
         headers: Dict[str, str],
-        today_str: str
+        today_str: str,
+        symbol: Optional[str] = None
     ) -> Optional[List[Any]]:
         """
         Synthesizes today's current day candle from Upstox 1-minute or 30-minute intraday API,
-        or quotes endpoint, ensuring today's data is factored into SMA 6 & SMA 30.
+        quotes endpoint, or live feed fallback, ensuring today's data is factored into SMA 6 & SMA 30.
         """
         intraday_url = f"{UPSTOX_INTRADAY_API}/{encoded_key}/1minute"
         try:
@@ -259,8 +261,6 @@ class UpstoxClientManager:
                 data = resp.json()
                 intraday_candles = data.get("data", {}).get("candles", [])
                 if intraday_candles:
-                    # Intraday candles are in reverse chronological order [newest ... oldest]
-                    # Earliest candle of the day is last element
                     today_open = intraday_candles[-1][1]
                     today_high = max(c[2] for c in intraday_candles)
                     today_low = min(c[3] for c in intraday_candles)
@@ -271,9 +271,43 @@ class UpstoxClientManager:
                     return [timestamp, today_open, today_high, today_low, today_close, today_volume, today_oi]
         except Exception as e:
             logger.debug(f"Unable to fetch intraday candle for {encoded_key}: {e}")
+
+        # Fallback to Upstox Market Quote OHLC API
+        try:
+            quote_url = f"{UPSTOX_QUOTE_OHLC_API}?instrument_key={encoded_key}&interval=1d"
+            resp = await client.get(quote_url, headers=headers)
+            if resp.status_code == 200:
+                qdata = resp.json().get("data", {})
+                for k, val in qdata.items():
+                    ohlc = val.get("ohlc", {})
+                    last_price = val.get("last_price", 0.0)
+                    if ohlc and last_price:
+                        return [
+                            f"{today_str}T00:00:00+05:30",
+                            ohlc.get("open", last_price),
+                            ohlc.get("high", last_price),
+                            ohlc.get("low", last_price),
+                            last_price,
+                            val.get("volume", 0),
+                            val.get("oi", 0)
+                        ]
+        except Exception as e:
+            logger.debug(f"Quote OHLC fallback error for {encoded_key}: {e}")
+
+        # Live Feed Fallback: Real-time NSE quote engine
+        if symbol:
+            try:
+                from backend.live_feed import get_today_live_candle
+                live_candle = await get_today_live_candle(symbol)
+                if live_candle:
+                    return live_candle
+            except Exception as e:
+                logger.debug(f"Live feed fallback error for {symbol}: {e}")
+
         return None
 
 class HTTPException_401(Exception):
     pass
 
 upstox_client_manager = UpstoxClientManager()
+

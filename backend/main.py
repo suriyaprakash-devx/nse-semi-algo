@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, status
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -88,11 +88,12 @@ def health_check():
 @app.post("/api/scanner/run")
 async def trigger_scan(
     background_tasks: BackgroundTasks,
-    session: OAuthSession = Depends(get_current_session)
+    session: Optional[OAuthSession] = Depends(get_current_session_optional)
 ):
     """
     Trigger the semi-algo scanner.
-    Requires an active and valid Upstox OAuth session.
+    If an active Upstox session exists, uses Upstox API v2.
+    If no Upstox session exists, seamlessly runs via Real-Time Live Market Feed.
     Scans NIFTY 100 + 200 universe, calculates SMA 6 & 30 with current day candle,
     detects confirmed crossovers, ranks by crossover date, and stores results.
     """
@@ -106,23 +107,32 @@ async def trigger_scan(
             }
         )
 
-    # Get active decrypted access token
-    try:
-        access_token = get_active_access_token(session)
-    except HTTPException:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Upstox authentication expired. Please reconnect your Upstox account."
-        )
+    # Get active decrypted access token if session is valid
+    access_token = None
+    if session:
+        try:
+            access_token = get_active_access_token(session)
+        except Exception:
+            access_token = None
 
     # Launch scan task in background
     asyncio.create_task(scanner_manager.run_scan(access_token=access_token))
 
     return {
         "status": "started",
-        "message": "Semi-algo scanner execution started.",
+        "message": f"Semi-algo scanner execution started ({'Upstox v2' if access_token else 'Live Market Feed'}).",
         "progress": scanner_manager.progress_message
     }
+
+@app.post("/api/scanner/stop")
+def stop_scanner():
+    """
+    Stops an ongoing semi-algo crossover scan immediately.
+    """
+    if not scanner_manager.is_running:
+        return {"status": "not_running", "message": "No scan is currently running."}
+    scanner_manager.stop_scan()
+    return {"status": "stopping", "message": "Scan abort initiated."}
 
 @app.get("/api/scanner/status")
 def get_scanner_status():
@@ -318,6 +328,217 @@ async def get_scoring_leaderboard(db: Session = Depends(get_db)):
     }
 
 
+# ----------------- Algo Signals Endpoints (AI Swing Trading v4.0) -----------------
+import json
+import random
+
+@app.get("/api/algo/swing-analysis")
+@app.get("/api/algo/swing-analysis/{symbol}")
+async def get_algo_swing_analysis(
+    symbol: str = "RELIANCE",
+    refresh: bool = False
+):
+    """
+    Executes AI SWING TRADING SYSTEM v4.0 for requested NSE equity.
+    Computes indicators, Supertrend, Relative Strength vs NIFTY,
+    TimeSeriesSplit XGBoost cross-validation, walk-forward backtesting,
+    probabilistic signal generation (STRONG BUY, BUY, AVOID, WAIT),
+    and exact Trade Plan (Entry, Target, Stoploss, R/R).
+    """
+    from backend.algo_swing import run_ai_swing_analysis
+    clean_symbol = symbol.strip().upper()
+    try:
+        data = await asyncio.to_thread(run_ai_swing_analysis, clean_symbol, force_refresh=refresh)
+        return {"status": "success", "data": data}
+    except Exception as e:
+        logger.error(f"Error in AI Swing Analysis for {clean_symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/scanner-data")
+async def get_scanner_data():
+    """
+    Returns metadata and stocks dataset for High-volume Breakout & Retest scanner.
+    Each stock includes symbol, company name, instrument token, Nifty flags, and daily candles.
+    """
+    cache_path = Path(__file__).resolve().parent.parent / "data" / "scanner_data_cache.json"
+    if not cache_path.exists():
+        try:
+            from data.build_scanner_cache import build_cache
+            await asyncio.to_thread(build_cache)
+        except Exception as e:
+            logger.warning(f"Unable to auto-build scanner cache: {e}")
+
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data
+        except Exception as e:
+            logger.error(f"Error reading scanner cache: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to load scanner cache: {e}")
+
+    raise HTTPException(status_code=503, detail="Scanner cache is currently initializing. Please retry in a few moments.")
+
+
+@app.get("/api/ohlc-snapshot")
+async def get_ohlc_snapshot(tokens: Optional[str] = None, symbols: Optional[str] = None):
+    """
+    Returns real-time live OHLC snapshot for requested symbols or instrument tokens,
+    providing true market LTP, day high, day low, day open, and volume.
+    """
+    from backend.live_feed import get_batch_live_quotes
+
+    requested_tokens = set([t.strip() for t in tokens.split(",") if t.strip()]) if tokens else set()
+    requested_symbols = set([s.strip().upper() for s in symbols.split(",") if s.strip()]) if symbols else set()
+
+    cache_path = Path(__file__).resolve().parent.parent / "data" / "scanner_data_cache.json"
+    token_to_sym = {}
+    sym_to_token = {}
+
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cdata = json.load(f)
+            for s in cdata.get("stocks", []):
+                sym = s.get("symbol", "").upper()
+                tok = s.get("instrument_token", "")
+                if sym and tok:
+                    token_to_sym[tok] = sym
+                    sym_to_token[sym] = tok
+        except Exception as e:
+            logger.debug(f"Cache map notice for snapshot: {e}")
+
+    # Determine symbols to query
+    query_symbols = set(requested_symbols)
+    for tok in requested_tokens:
+        if tok in token_to_sym:
+            query_symbols.add(token_to_sym[tok])
+
+    # If no specific filter, query all cached stocks
+    if not query_symbols and cache_path.exists():
+        query_symbols = set(sym_to_token.keys())
+
+    # Fetch real live quotes
+    live_quotes = await get_batch_live_quotes(list(query_symbols))
+    snapshot = {}
+
+    for sym, q in live_quotes.items():
+        tok = sym_to_token.get(sym, "")
+        price_info = {
+            "symbol": sym,
+            "instrument_token": tok,
+            "last_price": q.get("last_price", 0.0),
+            "open": q.get("open", 0.0),
+            "high": q.get("high", 0.0),
+            "low": q.get("low", 0.0),
+            "close": q.get("close", 0.0),
+            "volume": q.get("volume", 0),
+            "change": q.get("change", 0.0),
+            "change_pct": q.get("change_pct", 0.0),
+            "timestamp": q.get("timestamp", int(time.time()))
+        }
+        snapshot[sym] = price_info
+        if tok:
+            snapshot[tok] = price_info
+
+    return {"status": "success", "data": snapshot}
+
+
+@app.websocket("/ws/ticks")
+async def websocket_ticks_endpoint(websocket: WebSocket, tokens: Optional[str] = None, mode: Optional[str] = "full"):
+    """
+    WebSocket endpoint for real-time live price ticks.
+    Subscribes to requested instrument tokens and streams real market tick updates.
+    """
+    await websocket.accept()
+    from backend.live_feed import get_batch_live_quotes
+
+    token_list = [t.strip() for t in tokens.split(",") if t.strip()] if tokens else []
+    logger.info(f"WebSocket client connected for live ticks: {len(token_list)} tokens, mode={mode}")
+
+    cache_path = Path(__file__).resolve().parent.parent / "data" / "scanner_data_cache.json"
+    token_to_sym = {}
+    sym_to_token = {}
+
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cdata = json.load(f)
+            for s in cdata.get("stocks", []):
+                sym = s.get("symbol", "").upper()
+                tok = s.get("instrument_token", "")
+                if sym and tok:
+                    token_to_sym[tok] = sym
+                    sym_to_token[sym] = tok
+        except Exception as e:
+            logger.debug(f"Cache map notice for WS: {e}")
+
+    subscribed_symbols = [token_to_sym.get(t, t) for t in token_list]
+
+    # Send initial real live quote snapshot
+    initial_ticks = []
+    if subscribed_symbols:
+        live_quotes = await get_batch_live_quotes(subscribed_symbols)
+        for tok in token_list:
+            sym = token_to_sym.get(tok, tok)
+            q = live_quotes.get(sym)
+            if q:
+                initial_ticks.append({
+                    "token": tok,
+                    "symbol": sym,
+                    "last_price": q.get("last_price", 0.0),
+                    "change": q.get("change", 0.0),
+                    "change_pct": q.get("change_pct", 0.0),
+                    "volume": q.get("volume", 0),
+                    "timestamp": q.get("timestamp", int(time.time()))
+                })
+
+    try:
+        await websocket.send_json({
+            "type": "initial_snapshot",
+            "mode": mode,
+            "tokens_subscribed": len(token_list),
+            "ticks": initial_ticks
+        })
+    except Exception as e:
+        logger.warning(f"WS initial send failed: {e}")
+        return
+
+    # Keep track of previous prices to broadcast real price changes
+    last_broadcast_prices = {t["symbol"]: t["last_price"] for t in initial_ticks}
+
+    try:
+        while True:
+            await asyncio.sleep(2.5)
+            if not subscribed_symbols:
+                continue
+
+            # Fetch fresh real live quotes
+            fresh_quotes = await get_batch_live_quotes(subscribed_symbols)
+            for tok in token_list:
+                sym = token_to_sym.get(tok, tok)
+                q = fresh_quotes.get(sym)
+                if q:
+                    cur_price = q.get("last_price", 0.0)
+                    tick_payload = {
+                        "type": "tick",
+                        "token": tok,
+                        "symbol": sym,
+                        "last_price": cur_price,
+                        "change": q.get("change", 0.0),
+                        "change_pct": q.get("change_pct", 0.0),
+                        "volume": q.get("volume", 0),
+                        "timestamp": q.get("timestamp", int(time.time()))
+                    }
+                    await websocket.send_json(tick_payload)
+                    last_broadcast_prices[sym] = cur_price
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected cleanly.")
+    except Exception as e:
+        logger.info(f"WebSocket connection closed: {e}")
+
+
 # ----------------- Serve Frontend Static Build (SPA Fallback) -----------------
 frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if frontend_dist.exists():
@@ -327,7 +548,7 @@ if frontend_dist.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        if full_path.startswith("api") or full_path == "health":
+        if full_path.startswith("api") or full_path.startswith("ws") or full_path == "health":
             raise HTTPException(status_code=404, detail="Not found")
         file_path = frontend_dist / full_path
         if file_path.exists() and file_path.is_file():

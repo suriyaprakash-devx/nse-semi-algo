@@ -211,7 +211,6 @@ body {
 }
 
 /* Tabular Numerics for Zero-Jitter Realtime Ticks */
-.mono-num,
 .font-mono {
   font-family: var(--font-mono) !important;
   font-feature-settings: "tnum" 1, "zero" 1;
@@ -262,9 +261,6 @@ body {
   border-color: var(--bearish-border) !important;
 }
 
-.glow-cyan {
-  box-shadow: 0 0 16px rgba(0, 210, 255, 0.25);
-}
 
 /* Universal Button Styles */
 .btn {
