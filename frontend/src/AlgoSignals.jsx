@@ -43,13 +43,19 @@ const POPULAR_SYMBOLS = [
   'HDFCBANK',
   'INFY',
   'ICICIBANK',
+  'HAL',
+  'COALINDIA',
   'TATAMOTORS',
   'SBIN',
   'ITC',
   'BHARTIARTL',
   'LT',
   'BAJFINANCE',
-  'MARUTI'
+  'TITAN',
+  'AXISBANK',
+  'SUNPHARMA',
+  'MARUTI',
+  'BEL'
 ]
 
 // Number & Currency formatting helpers to guard against null/undefined/.toFixed() runtime crashes
@@ -1108,7 +1114,7 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
               </div>
 
               {/* Price Targets Row */}
-              <div className="plan-targets-row">
+              <div className="plan-targets-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
                 {/* Entry */}
                 <div className="plan-target-box entry-box">
                   <span className="box-label">ENTRY PRICE</span>
@@ -1116,11 +1122,25 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                   <span className="box-sub">Current Market Bar</span>
                 </div>
 
-                {/* Target */}
+                {/* Target 1 */}
                 <div className="plan-target-box target-box">
-                  <span className="box-label">TARGET (3.0x ATR)</span>
-                  <span className="box-val font-mono text-bullish-neon">{formatCurrency(data.trade_plan?.target_price)}</span>
-                  <span className="box-sub text-bullish-text font-mono">+{formatNum(data.trade_plan?.target_pct, 2, '0.00')}%</span>
+                  <span className="box-label">TARGET 1 (1.5x ATR)</span>
+                  <span className="box-val font-mono text-bullish-neon">{formatCurrency(data.trade_plan?.target_1 || data.trade_plan?.target_price)}</span>
+                  <span className="box-sub text-bullish-text font-mono">+{formatNum(data.trade_plan?.target_1_pct ?? (data.trade_plan?.target_pct ? data.trade_plan.target_pct / 2 : 0), 2, '0.00')}%</span>
+                </div>
+
+                {/* Target 2 */}
+                <div className="plan-target-box target-box" style={{ borderColor: 'var(--bullish-neon)' }}>
+                  <span className="box-label">TARGET 2 (3.0x ATR)</span>
+                  <span className="box-val font-mono text-bullish-neon" style={{ fontWeight: 800 }}>{formatCurrency(data.trade_plan?.target_2 || data.trade_plan?.target_price)}</span>
+                  <span className="box-sub text-bullish-text font-mono">+{formatNum(data.trade_plan?.target_2_pct ?? data.trade_plan?.target_pct, 2, '0.00')}% (Primary)</span>
+                </div>
+
+                {/* Target 3 */}
+                <div className="plan-target-box target-box">
+                  <span className="box-label">TARGET 3 (4.5x ATR)</span>
+                  <span className="box-val font-mono text-accent-cyan">{formatCurrency(data.trade_plan?.target_3 || (data.trade_plan?.target_price ? data.trade_plan.target_price * 1.05 : null))}</span>
+                  <span className="box-sub text-accent-cyan font-mono">+{formatNum(data.trade_plan?.target_3_pct ?? (data.trade_plan?.target_pct ? data.trade_plan.target_pct * 1.5 : 0), 2, '0.00')}% (Runner)</span>
                 </div>
 
                 {/* Stoploss */}
@@ -1143,14 +1163,16 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
               {/* Visual Trade Plan Slider */}
               <div className="plan-slider-wrap">
                 <div className="slider-markers-labels font-mono">
-                  <span className="sl-marker-label">SL: {formatCurrency(data.trade_plan?.stoploss_price)} (-{formatNum(data.trade_plan?.stoploss_pct, 1, '0.0')}%)</span>
+                  <span className="sl-marker-label">SL: {formatCurrency(data.trade_plan?.stoploss_price)}</span>
                   <span className="entry-marker-label">Entry: {formatCurrency(data.trade_plan?.entry_price || data.current_price)}</span>
-                  <span className="tg-marker-label">Target: {formatCurrency(data.trade_plan?.target_price)} (+{formatNum(data.trade_plan?.target_pct, 1, '0.0')}%)</span>
+                  <span className="tg-marker-label">T1: {formatCurrency(data.trade_plan?.target_1 || data.trade_plan?.target_price)}</span>
+                  <span className="tg-marker-label" style={{ color: 'var(--bullish-neon)', fontWeight: 700 }}>T2: {formatCurrency(data.trade_plan?.target_2 || data.trade_plan?.target_price)}</span>
+                  <span className="tg-marker-label" style={{ color: 'var(--accent-cyan)' }}>T3: {formatCurrency(data.trade_plan?.target_3)}</span>
                 </div>
                 <div className="plan-slider-track">
-                  <div className="slider-sl-zone" style={{ width: '33%' }} />
-                  <div className="slider-entry-pin" style={{ left: '33%' }} />
-                  <div className="slider-tg-zone" style={{ width: '67%' }} />
+                  <div className="slider-sl-zone" style={{ width: '25%' }} />
+                  <div className="slider-entry-pin" style={{ left: '25%' }} />
+                  <div className="slider-tg-zone" style={{ width: '75%' }} />
                 </div>
               </div>
 

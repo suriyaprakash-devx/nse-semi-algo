@@ -111,9 +111,28 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     except Exception as e:
         raise ValueError(f"Download Error for {stock}: {e}")
 
-    for label, frame in [("Stock Daily", df), ("NIFTY", nifty), ("Stock Weekly", df_wk)]:
-        if frame is None or frame.empty:
-            raise ValueError(f"{label} data not found for {stock}.")
+    # Fallback for newer listings (< 5y history)
+    if df is None or df.empty:
+        try:
+            df = yf.download(stock, period="2y", interval="1d", auto_adjust=True, progress=False)
+        except Exception:
+            pass
+    if df is None or df.empty:
+        try:
+            df = yf.download(stock, period="max", interval="1d", auto_adjust=True, progress=False)
+        except Exception:
+            pass
+
+    if df_wk is None or df_wk.empty:
+        try:
+            df_wk = yf.download(stock, period="2y", interval="1wk", auto_adjust=True, progress=False)
+        except Exception:
+            pass
+
+    if df is None or df.empty:
+        raise ValueError(f"Stock Daily data not found for {stock}.")
+    if nifty is None or nifty.empty:
+        raise ValueError("NIFTY benchmark (^NSEI) data not found.")
 
     # =========================================================
     # FIX COLUMNS
@@ -319,7 +338,10 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     bt_probs       = model.predict_proba(bt_X)[:, 1] * 100
 
     bt_df["BT_PROB"]   = bt_probs
-    bt_df["BT_SIGNAL"] = np.where(bt_df["BT_PROB"] > BUY_PROB_MIN, 1, 0)
+    # Adaptive threshold: if BUY_PROB_MIN yields fewer than 4 trades in out-of-sample window, test top percentile >= 52%
+    high_prob_count = (bt_df["BT_PROB"] > BUY_PROB_MIN).sum()
+    bt_threshold = BUY_PROB_MIN if high_prob_count >= 4 else 52.0
+    bt_df["BT_SIGNAL"] = np.where(bt_df["BT_PROB"] >= bt_threshold, 1, 0)
 
     # Simulate trades
     wins, losses, profits = 0, 0, []
@@ -383,7 +405,10 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
 
     sl  = price - (ATR_SL_MULT * atr_val)
     tg  = price + (ATR_TG_MULT * atr_val)
-    rr  = (tg - price) / (price - sl) if (price - sl) > 0 else 0.0
+    tg1 = price + (1.5 * atr_val)
+    tg2 = price + (3.0 * atr_val)
+    tg3 = price + (4.5 * atr_val)
+    rr  = (tg2 - price) / (price - sl) if (price - sl) > 0 else 0.0
 
     # =========================================================
     # SIGNAL LOGIC  (multi-condition confirmation)
@@ -411,10 +436,16 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     buy_score   = sum(1 for c in buy_check_items if c["passed"])
     avoid_score = sum(1 for c in avoid_check_items if c["passed"])
 
-    if buy_score >= 6:        signal = "STRONG BUY"
-    elif buy_score >= 4:      signal = "BUY"
-    elif avoid_score >= 3:    signal = "AVOID"
-    else:                     signal = "WAIT"
+    # Robust, institutional confirmation logic:
+    # A stock with low AI probability (< 38%) or high danger flags can NEVER be a BUY.
+    if prob < AVOID_PROB_MAX or avoid_score >= 3 or (price < ema200_val and weekly_trend == "BEARISH"):
+        signal = "AVOID"
+    elif prob >= BUY_PROB_MIN and buy_score >= 6 and avoid_score == 0:
+        signal = "STRONG BUY"
+    elif prob >= 50.0 and buy_score >= 4 and avoid_score <= 1:
+        signal = "BUY"
+    else:
+        signal = "WAIT"
 
     # Hold period estimate
     if   adx_val > 40: hold_days = 3
@@ -460,8 +491,14 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
         "avoid_conditions": avoid_check_items,
         "trade_plan": {
             "entry_price": round(price, 2),
-            "target_price": round(tg, 2),
-            "target_pct": round(((tg - price) / price * 100), 2),
+            "target_price": round(tg2, 2),
+            "target_pct": round(((tg2 - price) / price * 100), 2),
+            "target_1": round(tg1, 2),
+            "target_1_pct": round(((tg1 - price) / price * 100), 2),
+            "target_2": round(tg2, 2),
+            "target_2_pct": round(((tg2 - price) / price * 100), 2),
+            "target_3": round(tg3, 2),
+            "target_3_pct": round(((tg3 - price) / price * 100), 2),
             "stoploss_price": round(sl, 2),
             "stoploss_pct": round(((price - sl) / price * 100), 2),
             "risk_reward": round(rr, 2),
