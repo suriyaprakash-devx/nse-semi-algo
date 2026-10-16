@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     UPSTOX_CLIENT_SECRET: str = Field(default="", description="Upstox API Secret / Client Secret")
     UPSTOX_REDIRECT_URI: str = Field(default="http://localhost:8000/api/auth/callback", description="OAuth Redirect URI")
 
+    # Admin Single Login Credentials
+    ADMIN_USERNAME: str = Field(default="suriyaprakash", description="Admin login username")
+    ADMIN_PASSWORD: str = Field(default="master730", description="Admin login password")
+
     # Database
     DATABASE_URL: str = Field(default="sqlite:///./scanner.db", description="Database connection URL")
 
@@ -20,7 +24,10 @@ class Settings(BaseSettings):
 
     # CORS & Deployment
     FRONTEND_URL: str = Field(default="http://localhost:5173", description="Frontend origin for CORS")
-    ALLOWED_ORIGINS: str = Field(default="http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173", description="Comma-separated allowed origins")
+    ALLOWED_ORIGINS: str = Field(
+        default="http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,https://localhost,capacitor://localhost,http://localhost",
+        description="Comma-separated allowed origins (includes web and Capacitor mobile origins)"
+    )
 
     ENVIRONMENT: str = Field(default="development", description="Application environment")
     DELETE_RESULTS_AFTER_SCAN: bool = Field(default=False, description="Whether to delete older scan results after retrieval")

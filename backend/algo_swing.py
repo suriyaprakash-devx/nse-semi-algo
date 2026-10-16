@@ -212,12 +212,21 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     # =========================================================
     # WEEKLY TREND  (multi-timeframe)
     # =========================================================
-    wk_close = df_wk["Close"].squeeze()
-    df_wk["EMA20"] = EMAIndicator(wk_close, window=20).ema_indicator()
-    df_wk["EMA50"] = EMAIndicator(wk_close, window=50).ema_indicator()
-    df_wk.dropna(inplace=True)
+    weekly_trend = "NEUTRAL"
+    try:
+        if df_wk is not None and not df_wk.empty and len(df_wk) >= 10:
+            wk_close = df_wk["Close"].squeeze()
+            df_wk["EMA20"] = EMAIndicator(wk_close, window=min(20, max(5, len(df_wk) // 2))).ema_indicator()
+            df_wk["EMA50"] = EMAIndicator(wk_close, window=min(50, max(10, len(df_wk) - 2))).ema_indicator()
+            valid_wk = df_wk.dropna(subset=["EMA20", "EMA50"])
+            if not valid_wk.empty:
+                weekly_trend = "BULLISH" if valid_wk["EMA20"].iloc[-1] > valid_wk["EMA50"].iloc[-1] else "BEARISH"
+    except Exception as e_wk:
+        logger.debug(f"Weekly trend calculation fallback: {e_wk}")
 
-    weekly_trend = "BULLISH" if df_wk["EMA20"].iloc[-1] > df_wk["EMA50"].iloc[-1] else "BEARISH"
+    if weekly_trend == "NEUTRAL":
+        # Fallback to daily EMA20 vs EMA50 alignment
+        weekly_trend = "BULLISH" if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] else "BEARISH"
 
     # =========================================================
     # TARGET  (did price rise in next SWING_DAYS?)
@@ -228,6 +237,9 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     # CLEAN
     # =========================================================
     df.dropna(inplace=True)
+
+    if len(df) < 30:
+        raise ValueError(f"Insufficient historical data for {stock} (only {len(df)} bars available after indicators). Minimum 30 trading sessions required.")
 
     # =========================================================
     # FEATURE SET
@@ -252,7 +264,8 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     # =========================================================
     # TIMESERIES CROSS-VALIDATION
     # =========================================================
-    tscv = TimeSeriesSplit(n_splits=N_SPLITS)
+    actual_splits = min(N_SPLITS, max(2, len(df) // 30))
+    tscv = TimeSeriesSplit(n_splits=actual_splits)
 
     model = XGBClassifier(
         n_estimators      = 200,
@@ -277,8 +290,8 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
         sc   = accuracy_score(y.iloc[test_idx], pred)
         fold_scores.append(round(float(sc * 100), 2))
 
-    avg_accuracy = float(np.mean(fold_scores)) / 100.0
-    std_accuracy = float(np.std(fold_scores)) / 100.0
+    avg_accuracy = float(np.mean(fold_scores)) / 100.0 if fold_scores else 0.5
+    std_accuracy = float(np.std(fold_scores)) / 100.0 if fold_scores else 0.0
 
     # Final fit on all data
     model.fit(X, y)
@@ -335,8 +348,12 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     win_rate      = (wins / total_trades * 100) if total_trades > 0 else 0.0
     avg_profit    = float(np.mean(profits))      if profits else 0.0
     avg_win       = float(np.mean([p for p in profits if p > 0])) if any(p > 0 for p in profits) else 0.0
-    avg_loss      = float(np.mean([p for p in profits if p < 0])) if any(p < 0 for p in profits) else 0.0
-    profit_factor = abs(avg_win / avg_loss)     if avg_loss != 0 else 0.0
+    if avg_loss != 0:
+        profit_factor = abs(avg_win / avg_loss)
+    elif avg_win > 0:
+        profit_factor = 9.99  # All trades were wins
+    else:
+        profit_factor = 0.0
 
     # Max Drawdown
     cum_returns   = np.cumsum(profits) if profits else np.array([0.0])

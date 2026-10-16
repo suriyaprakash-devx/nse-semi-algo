@@ -19,6 +19,8 @@ import {
   Activity,
   Flame,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   Info,
   Check,
   X,
@@ -33,6 +35,7 @@ import {
   History
 } from 'lucide-react'
 import './AlgoSignals.css'
+import { apiFetch } from './apiClient'
 
 const POPULAR_SYMBOLS = [
   'RELIANCE',
@@ -49,8 +52,22 @@ const POPULAR_SYMBOLS = [
   'MARUTI'
 ]
 
+// Number & Currency formatting helpers to guard against null/undefined/.toFixed() runtime crashes
+const formatNum = (val, decimals = 2, fallback = '—') => {
+  if (val === null || val === undefined || isNaN(Number(val))) return fallback
+  return Number(val).toFixed(decimals)
+}
+
+const formatCurrency = (val, decimals = 2, fallback = '₹0.00') => {
+  if (val === null || val === undefined || isNaN(Number(val))) return fallback
+  return `₹${Number(val).toLocaleString('en-IN', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  })}`
+}
+
 // =========================================================================
-// 1. INTERACTIVE CANDLESTICK & EMA & VOLUME SVG CHART
+// 1. INTERACTIVE CANDLESTICK & EMA & VOLUME SVG CHART (TOUCH + MOUSE READY)
 // =========================================================================
 function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' }) {
   const [hoverIndex, setHoverIndex] = useState(null)
@@ -76,53 +93,55 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
   const chartW = W - pad.left - pad.right
 
   // Price Extents
-  const minPrice = Math.min(...history.map(d => Math.min(d.low, d.ema20 || d.low, d.ema50 || d.low))) * 0.992
-  const maxPrice = Math.max(...history.map(d => Math.max(d.high, d.ema20 || d.high, d.ema50 || d.high))) * 1.008
-  const priceSpan = maxPrice - minPrice || 1
+  const minPrice = Math.min(...history.map(d => Math.min(d.low ?? d.close ?? 1, (d.ema20 != null ? d.ema20 : (d.low ?? d.close ?? 1)), (d.ema50 != null ? d.ema50 : (d.low ?? d.close ?? 1))))) * 0.992
+  const maxPrice = Math.max(...history.map(d => Math.max(d.high ?? d.close ?? 1, (d.ema20 != null ? d.ema20 : (d.high ?? d.close ?? 1)), (d.ema50 != null ? d.ema50 : (d.high ?? d.close ?? 1))))) * 1.008
+  const priceSpan = Math.max(0.01, maxPrice - minPrice)
 
   // Volume Extents
-  const maxVol = Math.max(...history.map(d => d.volume || 1)) || 1
+  const maxVol = Math.max(1, ...history.map(d => Number(d.volume) || 1))
 
   // Scalers
-  const xAt = (i) => pad.left + (i + 0.5) * (chartW / history.length)
-  const yAtPrice = (p) => pad.top + priceH - ((p - minPrice) / priceSpan) * priceH
-  const yAtVol = (v) => volTop + volH - (v / maxVol) * volH
-  const candleW = Math.max(4, Math.min(14, (chartW / history.length) * 0.65))
+  const xAt = (i) => pad.left + (i + 0.5) * (chartW / Math.max(1, history.length))
+  const yAtPrice = (p) => pad.top + priceH - ((Number(p) - minPrice) / priceSpan) * priceH
+  const yAtVol = (v) => volTop + volH - (Number(v) / maxVol) * volH
+  const candleW = Math.max(4, Math.min(14, (chartW / Math.max(1, history.length)) * 0.65))
 
-  // EMA paths
+  // EMA paths (Safely starts with M even if earlier points are null/NaN)
   const ema20Path = useMemo(() => {
-    return history
-      .map((d, i) => {
-        if (!d.ema20) return null
-        const x = xAt(i)
-        const y = yAtPrice(d.ema20)
-        return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
-      })
-      .filter(Boolean)
-      .join(' ')
-  }, [history, minPrice, maxPrice])
+    let started = false
+    const pts = []
+    for (let i = 0; i < history.length; i++) {
+      const v = history[i]?.ema20
+      if (v != null && !isNaN(v)) {
+        pts.push(`${!started ? 'M' : 'L'} ${xAt(i).toFixed(1)} ${yAtPrice(v).toFixed(1)}`)
+        started = true
+      }
+    }
+    return pts.join(' ')
+  }, [history, minPrice, priceSpan])
 
   const ema50Path = useMemo(() => {
-    return history
-      .map((d, i) => {
-        if (!d.ema50) return null
-        const x = xAt(i)
-        const y = yAtPrice(d.ema50)
-        return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
-      })
-      .filter(Boolean)
-      .join(' ')
-  }, [history, minPrice, maxPrice])
+    let started = false
+    const pts = []
+    for (let i = 0; i < history.length; i++) {
+      const v = history[i]?.ema50
+      if (v != null && !isNaN(v)) {
+        pts.push(`${!started ? 'M' : 'L'} ${xAt(i).toFixed(1)} ${yAtPrice(v).toFixed(1)}`)
+        started = true
+      }
+    }
+    return pts.join(' ')
+  }, [history, minPrice, priceSpan])
 
   // Area Path
   const areaPath = useMemo(() => {
     if (history.length === 0) return ''
-    const points = history.map((d, i) => `${xAt(i).toFixed(1)} ${yAtPrice(d.close).toFixed(1)}`)
+    const points = history.map((d, i) => `${xAt(i).toFixed(1)} ${yAtPrice(d.close || 0).toFixed(1)}`)
     const firstX = xAt(0).toFixed(1)
     const lastX = xAt(history.length - 1).toFixed(1)
     const baseY = (pad.top + priceH).toFixed(1)
     return `M ${points.join(' L ')} L ${lastX} ${baseY} L ${firstX} ${baseY} Z`
-  }, [history, minPrice, maxPrice])
+  }, [history, minPrice, priceSpan])
 
   // Price Gridlines (4 levels)
   const gridLevels = [0.1, 0.35, 0.65, 0.9].map(ratio => {
@@ -130,11 +149,11 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
     return { price: p, y: yAtPrice(p) }
   })
 
-  // Mouse Move
-  const handleMouseMove = (e) => {
+  // Pointer position tracker (works for both mouse & touch)
+  const updatePointer = (clientX) => {
     if (!svgRef.current) return
     const rect = svgRef.current.getBoundingClientRect()
-    const mouseX = e.clientX - rect.left
+    const mouseX = clientX - rect.left
     const scaledX = (mouseX / rect.width) * W
     const relativeX = scaledX - pad.left
     if (relativeX < 0 || relativeX > chartW) {
@@ -149,10 +168,26 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
     }
   }
 
-  const activeBar = hoverIndex !== null ? history[hoverIndex] : history[history.length - 1]
-  const isUpSession = activeBar.close >= activeBar.open
-  const sessionChg = activeBar.close - activeBar.open
-  const sessionChgPct = activeBar.open > 0 ? (sessionChg / activeBar.open) * 100 : 0
+  const handleMouseMove = (e) => updatePointer(e.clientX)
+  const handleTouch = (e) => {
+    if (e.touches && e.touches.length > 0) {
+      updatePointer(e.touches[0].clientX)
+    }
+  }
+
+  // Active bar resolution with total null safety
+  const activeBar = (hoverIndex !== null && history[hoverIndex])
+    ? history[hoverIndex]
+    : (history[history.length - 1] || {})
+
+  const oVal = Number(activeBar.open) || 0
+  const hVal = Number(activeBar.high) || 0
+  const lVal = Number(activeBar.low) || 0
+  const cVal = Number(activeBar.close) || 0
+  const volVal = Number(activeBar.volume) || 0
+  const isUpSession = cVal >= oVal
+  const sessionChg = cVal - oVal
+  const sessionChgPct = oVal > 0 ? (sessionChg / oVal) * 100 : 0
 
   return (
     <div className="candle-chart-wrapper">
@@ -161,17 +196,19 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
         <div className="candle-info-hud">
           <div className="hud-symbol-date">
             <span className="hud-sym">{symbol}</span>
-            <span className="hud-date font-mono">{activeBar.date}</span>
+            <span className="hud-date font-mono">{activeBar.date || ''}</span>
           </div>
           <div className="hud-ohlc font-mono">
-            <span>O: <b className="text-text-main">₹{activeBar.open?.toFixed(2)}</b></span>
-            <span>H: <b className="text-bullish-neon">₹{activeBar.high?.toFixed(2)}</b></span>
-            <span>L: <b className="text-bearish-neon">₹{activeBar.low?.toFixed(2)}</b></span>
-            <span>C: <b className={isUpSession ? 'text-bullish-neon' : 'text-bearish-neon'}>₹{activeBar.close?.toFixed(2)}</b></span>
+            <span>O: <b className="text-text-main">₹{formatNum(oVal, 2)}</b></span>
+            <span>H: <b className="text-bullish-neon">₹{formatNum(hVal, 2)}</b></span>
+            <span>L: <b className="text-bearish-neon">₹{formatNum(lVal, 2)}</b></span>
+            <span>C: <b className={isUpSession ? 'text-bullish-neon' : 'text-bearish-neon'}>₹{formatNum(cVal, 2)}</b></span>
             <span className={`hud-chg ${isUpSession ? 'text-bullish-neon' : 'text-bearish-neon'}`}>
-              ({sessionChg >= 0 ? '+' : ''}{sessionChg.toFixed(2)} / {sessionChgPct >= 0 ? '+' : ''}{sessionChgPct.toFixed(2)}%)
+              ({sessionChg >= 0 ? '+' : ''}{formatNum(sessionChg, 2)} / {sessionChgPct >= 0 ? '+' : ''}{formatNum(sessionChgPct, 2)}%)
             </span>
-            <span className="hud-vol text-muted">Vol: {(activeBar.volume / 1000000).toFixed(2)}M</span>
+            <span className="hud-vol text-muted">
+              Vol: {volVal >= 1000000 ? `${(volVal / 1000000).toFixed(2)}M` : `${(volVal / 1000).toFixed(1)}k`}
+            </span>
           </div>
         </div>
 
@@ -199,8 +236,15 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
         </div>
       </div>
 
-      {/* SVG Canvas */}
-      <div className="svg-container" onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIndex(null)}>
+      {/* SVG Canvas with Mouse & Touch Listeners */}
+      <div
+        className="svg-container"
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setHoverIndex(null)}
+        onTouchStart={handleTouch}
+        onTouchMove={handleTouch}
+        onTouchEnd={() => setHoverIndex(null)}
+      >
         <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="interactive-candle-svg">
           <defs>
             <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
@@ -225,7 +269,7 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
                 y1={g.y}
                 x2={W - pad.right}
                 y2={g.y}
-                stroke="rgba(255, 255, 255, 0.06)"
+                stroke="rgba(255, 255, 255, 0.08)"
                 strokeDasharray="4 4"
               />
               <text
@@ -244,7 +288,7 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
             y1={volTop}
             x2={W - pad.right}
             y2={volTop}
-            stroke="rgba(255, 255, 255, 0.08)"
+            stroke="rgba(255, 255, 255, 0.10)"
           />
           <text
             x={W - pad.right + 8}
@@ -257,9 +301,9 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
           {/* Volume Bars */}
           {history.map((d, i) => {
             const x = xAt(i)
-            const yV = yAtVol(d.volume)
+            const yV = yAtVol(d.volume || 1)
             const barH = Math.max(1, volTop + volH - yV)
-            const isUp = d.close >= d.open
+            const isUp = (d.close || 0) >= (d.open || 0)
             return (
               <rect
                 key={`vol-${i}`}
@@ -278,7 +322,7 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
             <>
               <path d={areaPath} fill="url(#areaGradient)" />
               <path
-                d={history.map((d, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i).toFixed(1)} ${yAtPrice(d.close).toFixed(1)}`).join(' ')}
+                d={history.map((d, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i).toFixed(1)} ${yAtPrice(d.close || 0).toFixed(1)}`).join(' ')}
                 fill="none"
                 stroke="#00d2ff"
                 strokeWidth={2}
@@ -287,11 +331,11 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
           ) : (
             history.map((d, i) => {
               const x = xAt(i)
-              const yH = yAtPrice(d.high)
-              const yL = yAtPrice(d.low)
-              const yO = yAtPrice(d.open)
-              const yC = yAtPrice(d.close)
-              const isUp = d.close >= d.open
+              const yH = yAtPrice(d.high ?? d.close ?? 0)
+              const yL = yAtPrice(d.low ?? d.close ?? 0)
+              const yO = yAtPrice(d.open ?? d.close ?? 0)
+              const yC = yAtPrice(d.close ?? 0)
+              const isUp = (d.close || 0) >= (d.open || 0)
               const color = isUp ? '#10b981' : '#ef4444'
               const bodyTop = Math.min(yO, yC)
               const bodyH = Math.max(2, Math.abs(yC - yO))
@@ -323,7 +367,7 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
             })
           )}
 
-          {/* EMA Lines */}
+          {/* EMA Lines (safely connected) */}
           {ema20Path && (
             <path
               d={ema20Path}
@@ -344,30 +388,30 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
           )}
 
           {/* Interactive Crosshair Tracking */}
-          {hoverIndex !== null && (
+          {hoverIndex !== null && history[hoverIndex] && (
             <g className="crosshair-group">
               <line
                 x1={xAt(hoverIndex)}
                 y1={pad.top}
                 x2={xAt(hoverIndex)}
                 y2={volTop + volH}
-                stroke="rgba(255, 255, 255, 0.4)"
+                stroke="rgba(255, 255, 255, 0.45)"
                 strokeDasharray="3 3"
                 strokeWidth={1}
               />
               <line
                 x1={pad.left}
-                y1={yAtPrice(history[hoverIndex].close)}
+                y1={yAtPrice(history[hoverIndex].close || 0)}
                 x2={W - pad.right}
-                y2={yAtPrice(history[hoverIndex].close)}
-                stroke="rgba(0, 210, 255, 0.4)"
+                y2={yAtPrice(history[hoverIndex].close || 0)}
+                stroke="rgba(0, 210, 255, 0.45)"
                 strokeDasharray="3 3"
                 strokeWidth={1}
               />
               <circle
                 cx={xAt(hoverIndex)}
-                cy={yAtPrice(history[hoverIndex].close)}
-                r={4}
+                cy={yAtPrice(history[hoverIndex].close || 0)}
+                r={4.5}
                 fill="#00d2ff"
                 stroke="#ffffff"
                 strokeWidth={1.5}
@@ -375,10 +419,11 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
             </g>
           )}
 
-          {/* Date Axis Ticks (Show ~5 dates) */}
+          {/* Date Axis Ticks (~5 labels) */}
           {history.map((d, i) => {
             const step = Math.floor(history.length / 5) || 1
             if (i % step === 0 || i === history.length - 1) {
+              const label = d.date ? String(d.date).slice(5) : ''
               return (
                 <text
                   key={`date-${i}`}
@@ -387,7 +432,7 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
                   textAnchor="middle"
                   className="svg-axis-label font-mono"
                 >
-                  {d.date.slice(5)}
+                  {label}
                 </text>
               )
             }
@@ -405,8 +450,13 @@ function InteractiveCandleChart({ history = [], currentPrice = 0, symbol = '' })
 function InteractiveEquityCurve({ returns = [] }) {
   const [hoverIndex, setHoverIndex] = useState(null)
 
-  if (!returns || returns.length === 0) {
-    return <div className="equity-empty font-mono">No walk-forward curve data</div>
+  const validReturns = useMemo(() => {
+    if (!Array.isArray(returns) || returns.length === 0) return []
+    return returns.map(Number).filter(v => !isNaN(v))
+  }, [returns])
+
+  if (validReturns.length === 0) {
+    return <div className="equity-empty font-mono">No walk-forward curve data available</div>
   }
 
   const W = 620
@@ -415,31 +465,43 @@ function InteractiveEquityCurve({ returns = [] }) {
   const chartW = W - pad.left - pad.right
   const chartH = H - pad.top - pad.bottom
 
-  const minVal = Math.min(0, ...returns) * 1.15
-  const maxVal = Math.max(0, ...returns) * 1.15
-  const valSpan = maxVal - minVal || 1
+  const rawMin = Math.min(0, ...validReturns)
+  const rawMax = Math.max(0, ...validReturns)
+  const minVal = rawMin < 0 ? rawMin * 1.15 : -0.5
+  const maxVal = rawMax > 0 ? rawMax * 1.15 : 0.5
+  const valSpan = Math.max(0.1, maxVal - minVal)
 
-  const xAt = (i) => pad.left + (i / Math.max(1, returns.length - 1)) * chartW
-  const yAt = (v) => pad.top + chartH - ((v - minVal) / valSpan) * chartH
-  const zeroY = yAt(0)
+  const xAt = (i) => pad.left + (i / Math.max(1, validReturns.length - 1)) * chartW
+  const yAt = (v) => pad.top + chartH - ((Number(v) - minVal) / valSpan) * chartH
+  const zeroY = Math.max(pad.top, Math.min(pad.top + chartH, yAt(0)))
 
-  const linePath = returns
+  const linePath = validReturns
     .map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`)
     .join(' ')
 
   const areaPath = `M ${xAt(0).toFixed(1)} ${zeroY.toFixed(1)} ` +
-    returns.map((v, i) => `L ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`).join(' ') +
-    ` L ${xAt(returns.length - 1).toFixed(1)} ${zeroY.toFixed(1)} Z`
+    validReturns.map((v, i) => `L ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`).join(' ') +
+    ` L ${xAt(validReturns.length - 1).toFixed(1)} ${zeroY.toFixed(1)} Z`
 
-  const finalReturn = returns[returns.length - 1] || 0
+  const finalReturn = validReturns[validReturns.length - 1] ?? 0
   const isPositive = finalReturn >= 0
+
+  const handlePointer = (clientX, rect) => {
+    const relX = ((clientX - rect.left) / rect.width) * W - pad.left
+    const idx = Math.round((relX / chartW) * (validReturns.length - 1))
+    if (idx >= 0 && idx < validReturns.length) {
+      setHoverIndex(idx)
+    } else {
+      setHoverIndex(null)
+    }
+  }
 
   return (
     <div className="equity-curve-card">
       <div className="equity-header font-mono">
         <span className="equity-label">Cumulative Out-Of-Sample Return</span>
         <span className={`equity-val ${isPositive ? 'text-bullish-neon' : 'text-bearish-neon'}`}>
-          {isPositive ? '+' : ''}{finalReturn.toFixed(2)}%
+          {isPositive ? '+' : ''}{formatNum(finalReturn, 2)}%
         </span>
       </div>
 
@@ -447,13 +509,11 @@ function InteractiveEquityCurve({ returns = [] }) {
         <svg
           viewBox={`0 0 ${W} ${H}`}
           className="equity-svg"
-          onMouseMove={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect()
-            const relX = ((e.clientX - rect.left) / rect.width) * W - pad.left
-            const idx = Math.round((relX / chartW) * (returns.length - 1))
-            if (idx >= 0 && idx < returns.length) setHoverIndex(idx)
-          }}
+          onMouseMove={(e) => handlePointer(e.clientX, e.currentTarget.getBoundingClientRect())}
           onMouseLeave={() => setHoverIndex(null)}
+          onTouchStart={(e) => e.touches?.[0] && handlePointer(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
+          onTouchMove={(e) => e.touches?.[0] && handlePointer(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
+          onTouchEnd={() => setHoverIndex(null)}
         >
           <defs>
             <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
@@ -468,7 +528,7 @@ function InteractiveEquityCurve({ returns = [] }) {
             y1={zeroY}
             x2={W - pad.right}
             y2={zeroY}
-            stroke="rgba(255, 255, 255, 0.15)"
+            stroke="rgba(255, 255, 255, 0.2)"
             strokeDasharray="4 4"
           />
           <text x={pad.left - 8} y={zeroY + 4} textAnchor="end" className="svg-axis-label font-mono">
@@ -485,21 +545,21 @@ function InteractiveEquityCurve({ returns = [] }) {
           />
 
           {/* Hover indicator */}
-          {hoverIndex !== null && (
+          {hoverIndex !== null && validReturns[hoverIndex] !== undefined && (
             <g>
               <line
                 x1={xAt(hoverIndex)}
                 y1={pad.top}
                 x2={xAt(hoverIndex)}
                 y2={pad.top + chartH}
-                stroke="rgba(255, 255, 255, 0.3)"
+                stroke="rgba(255, 255, 255, 0.35)"
                 strokeDasharray="2 2"
               />
               <circle
                 cx={xAt(hoverIndex)}
-                cy={yAt(returns[hoverIndex])}
-                r={4}
-                fill={isPositive ? '#10b981' : '#ef4444'}
+                cy={yAt(validReturns[hoverIndex])}
+                r={4.5}
+                fill={validReturns[hoverIndex] >= 0 ? '#10b981' : '#ef4444'}
                 stroke="#fff"
                 strokeWidth={1.5}
               />
@@ -511,14 +571,14 @@ function InteractiveEquityCurve({ returns = [] }) {
             Trade 1
           </text>
           <text x={W - pad.right} y={H - 6} textAnchor="end" className="svg-axis-label font-mono">
-            Trade {returns.length}
+            Trade {validReturns.length}
           </text>
         </svg>
 
-        {hoverIndex !== null && (
+        {hoverIndex !== null && validReturns[hoverIndex] !== undefined && (
           <div className="equity-hud-tooltip font-mono">
-            Trade #{hoverIndex + 1}: <b className={returns[hoverIndex] >= 0 ? 'text-bullish-neon' : 'text-bearish-neon'}>
-              {returns[hoverIndex] >= 0 ? '+' : ''}{returns[hoverIndex].toFixed(2)}%
+            Trade #{hoverIndex + 1}: <b className={validReturns[hoverIndex] >= 0 ? 'text-bullish-neon' : 'text-bearish-neon'}>
+              {validReturns[hoverIndex] >= 0 ? '+' : ''}{formatNum(validReturns[hoverIndex], 2)}%
             </b>
           </div>
         )}
@@ -535,19 +595,31 @@ function PositionSizingCalculator({ entryPrice = 0, stoplossPrice = 0, targetPri
   const [riskPct, setRiskPct] = useState(2.0)
   const [isOpen, setIsOpen] = useState(false)
 
-  const riskPerShare = Math.max(0.01, entryPrice - stoplossPrice)
-  const targetPerShare = Math.max(0.01, targetPrice - entryPrice)
-  const maxRiskAmount = (capital * riskPct) / 100
+  const entry = Math.max(0.01, Number(entryPrice) || 0)
+  const sl = Number(stoplossPrice) || (entry * 0.95)
+  const tg = Number(targetPrice) || (entry * 1.10)
 
+  const riskPerShare = Math.max(0.05, entry > sl ? entry - sl : entry * 0.03)
+  const targetPerShare = Math.max(0.05, tg > entry ? tg - entry : entry * 0.06)
+  const maxRiskAmount = Math.max(10, (capital * riskPct) / 100)
+
+  // Recommended quantity based on max risk amount allowed
   const suggestedQty = Math.max(1, Math.floor(maxRiskAmount / riskPerShare))
-  const totalOutlay = suggestedQty * entryPrice
+  const totalOutlay = suggestedQty * entry
+  const maxCashQty = entry > 0 ? Math.max(1, Math.floor(capital / entry)) : 0
   const totalRiskINR = suggestedQty * riskPerShare
   const totalRewardINR = suggestedQty * targetPerShare
-  const netRR = totalRiskINR > 0 ? (totalRewardINR / totalRiskINR).toFixed(2) : '2.0'
+  const netRR = totalRiskINR > 0 ? (totalRewardINR / totalRiskINR).toFixed(2) : '2.00'
+  const isExceedingCash = totalOutlay > capital
 
   return (
     <div className="calc-drawer-wrapper">
-      <div className="calc-trigger-bar" onClick={() => setIsOpen(!isOpen)}>
+      <div
+        className="calc-trigger-bar"
+        onClick={() => setIsOpen(!isOpen)}
+        role="button"
+        tabIndex={0}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Calculator size={16} className="text-accent-cyan" />
           <span className="calc-title">Trade Position Sizing & Capital Allocator</span>
@@ -556,9 +628,9 @@ function PositionSizingCalculator({ entryPrice = 0, stoplossPrice = 0, targetPri
           <span className="calc-summary font-mono">
             Recommended: <b>{suggestedQty} Qty</b> • Outlay: ₹{totalOutlay.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
           </span>
-          <button type="button" className="calc-toggle-btn">
+          <span className="calc-toggle-btn">
             {isOpen ? 'Collapse ▲' : 'Open Calculator ▼'}
-          </button>
+          </span>
         </div>
       </div>
 
@@ -570,7 +642,7 @@ function PositionSizingCalculator({ entryPrice = 0, stoplossPrice = 0, targetPri
               <input
                 type="number"
                 value={capital}
-                onChange={(e) => setCapital(Math.max(1000, Number(e.target.value)))}
+                onChange={(e) => setCapital(Math.max(1000, Number(e.target.value) || 0))}
                 className="calc-input font-mono"
                 step="10000"
               />
@@ -603,7 +675,11 @@ function PositionSizingCalculator({ entryPrice = 0, stoplossPrice = 0, targetPri
             <div className="calc-res-card">
               <span className="calc-res-label">TOTAL CAPITAL REQUIRED</span>
               <span className="calc-res-val font-mono">₹{totalOutlay.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
-              <span className="calc-res-sub font-mono">{(totalOutlay / capital * 100).toFixed(1)}% of total portfolio</span>
+              <span className={`calc-res-sub font-mono ${isExceedingCash ? 'text-warning-text' : ''}`}>
+                {isExceedingCash
+                  ? `Requires ${(totalOutlay / capital).toFixed(1)}x leverage (Max Cash: ${maxCashQty} Qty)`
+                  : `${(totalOutlay / capital * 100).toFixed(1)}% of total portfolio`}
+              </span>
             </div>
 
             <div className="calc-res-card">
@@ -639,6 +715,10 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
   const [checkFilter, setCheckFilter] = useState('all') // 'all' | 'passed' | 'failed'
   const [tradeFilter, setTradeFilter] = useState('all') // 'all' | 'won' | 'lost'
 
+  // In-memory client cache to make switching between equities instant
+  const analysisCacheRef = useRef(new Map())
+  const currentReqId = useRef(0)
+
   // Recent searches cache
   const [recentSearches, setRecentSearches] = useState(() => {
     try {
@@ -664,8 +744,24 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
   }, [loading])
 
   const fetchAnalysis = async (symToFetch, forceRefresh = false) => {
-    const cleanSym = (symToFetch || symbol).trim().toUpperCase().replace('.NS', '')
+    const cleanSym = (symToFetch || symbol || 'RELIANCE').trim().toUpperCase().replace('.NS', '')
     if (!cleanSym) return
+
+    // Check fast client-side in-memory cache (5 min TTL)
+    const now = Date.now()
+    if (!forceRefresh && analysisCacheRef.current.has(cleanSym)) {
+      const cached = analysisCacheRef.current.get(cleanSym)
+      if (now - cached.timestamp < 300000) {
+        setSymbol(cleanSym)
+        setSearchInput(cleanSym)
+        setData(cached.data)
+        setLoading(false)
+        setError(null)
+        return
+      }
+    }
+
+    const reqId = ++currentReqId.current
     setLoading(true)
     setError(null)
     setSymbol(cleanSym)
@@ -679,8 +775,13 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
     })
 
     try {
-      const url = `${apiBase}/api/algo/swing-analysis?symbol=${encodeURIComponent(cleanSym)}${forceRefresh ? '&refresh=true' : ''}`
-      const res = await fetch(url)
+      // Resolve base URL safely with full fallback chain
+      const resolvedBase = (apiBase && apiBase.trim())
+        || (typeof window !== 'undefined' ? localStorage.getItem('upstox_custom_api_url') : null)
+        || (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://nse-semi-algo-1.onrender.com').replace(/\/+$/, '')
+
+      const url = `${resolvedBase}/api/algo/swing-analysis?symbol=${encodeURIComponent(cleanSym)}${forceRefresh ? '&refresh=true' : ''}`
+      const res = await apiFetch(url)
       if (!res.ok) {
         let errDetail = 'Failed to execute AI Swing Analysis'
         try {
@@ -693,15 +794,22 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
         throw new Error(errDetail)
       }
       const json = await res.json()
+      if (reqId !== currentReqId.current) return // Stale response discarded
+
       if (json.data) {
         setData(json.data)
+        analysisCacheRef.current.set(cleanSym, { data: json.data, timestamp: Date.now() })
       } else {
         throw new Error('No analysis data received')
       }
     } catch (err) {
-      setError(err.message || 'Error executing AI analysis')
+      if (reqId === currentReqId.current) {
+        setError(err.message || 'Error executing AI analysis')
+      }
     } finally {
-      setLoading(false)
+      if (reqId === currentReqId.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -929,13 +1037,13 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
               <div className="card-ambient-glow" />
               <div className="hero-signal-top">
                 <div className="hero-stock-heading">
-                  <span className="stock-sym-badge">{data.symbol}</span>
+                  <span className="stock-sym-badge">{data.symbol || symbol}</span>
                   <span className="stock-exchange-tag">NSE EQUITIES</span>
-                  <span className="stock-date-tag font-mono">{data.analysis_date}</span>
+                  <span className="stock-date-tag font-mono">{data.analysis_date || ''}</span>
                 </div>
                 <div className="hero-price-display font-mono">
                   <span className="price-label">Current Close (LTP)</span>
-                  <span className="price-value">₹{data.current_price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                  <span className="price-value">{formatCurrency(data.current_price)}</span>
                 </div>
               </div>
 
@@ -950,13 +1058,13 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                       r="42"
                       style={{
                         strokeDasharray: 264,
-                        strokeDashoffset: 264 - (264 * Math.min(100, Math.max(0, data.ai_probability))) / 100,
-                        stroke: data.ai_probability >= 65 ? 'var(--bullish-neon)' : (data.ai_probability <= 38 ? 'var(--bearish-neon)' : 'var(--warning-text)')
+                        strokeDashoffset: 264 - (264 * Math.min(100, Math.max(0, Number(data.ai_probability) || 50))) / 100,
+                        stroke: (data.ai_probability >= 65) ? 'var(--bullish-neon)' : ((data.ai_probability <= 38) ? 'var(--bearish-neon)' : 'var(--warning-text)')
                       }}
                     />
                   </svg>
                   <div className="prob-gauge-center">
-                    <span className="prob-number font-mono">{data.ai_probability.toFixed(1)}%</span>
+                    <span className="prob-number font-mono">{formatNum(data.ai_probability, 1, '50.0')}%</span>
                     <span className="prob-label">AI PROBABILITY</span>
                   </div>
                 </div>
@@ -964,7 +1072,7 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="signal-verdict-box">
                   <div className="signal-verdict-badge">
                     {getSignalIcon(data.signal)}
-                    <span className="signal-text">{data.signal}</span>
+                    <span className="signal-text">{data.signal || 'WAIT'}</span>
                   </div>
                   <div className="signal-summary-text">
                     {data.signal === 'STRONG BUY' && 'Institutional conviction confirmed: ≥ 6/8 Buy checks passed.'}
@@ -974,9 +1082,9 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                   </div>
                   <div className="checks-mini-bar font-mono">
                     <span className="checks-pass-pill">
-                      <Check size={12} /> {data.buy_score}/{data.buy_checks_total} Buy Checks
+                      <Check size={12} /> {data.buy_score ?? 0}/{data.buy_checks_total ?? 8} Buy Checks
                     </span>
-                    {data.avoid_score > 0 && (
+                    {(data.avoid_score ?? 0) > 0 && (
                       <span className="checks-avoid-pill">
                         <AlertTriangle size={12} /> {data.avoid_score} Avoid Flags
                       </span>
@@ -995,7 +1103,7 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 </div>
                 <div className="hold-period-badge font-mono">
                   <Clock size={13} />
-                  <span>Est. Hold: ~{data.trade_plan.hold_period_days} Days</span>
+                  <span>Est. Hold: ~{data.trade_plan?.hold_period_days ?? 5} Days</span>
                 </div>
               </div>
 
@@ -1004,30 +1112,30 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 {/* Entry */}
                 <div className="plan-target-box entry-box">
                   <span className="box-label">ENTRY PRICE</span>
-                  <span className="box-val font-mono">₹{data.trade_plan.entry_price.toFixed(2)}</span>
+                  <span className="box-val font-mono">{formatCurrency(data.trade_plan?.entry_price || data.current_price)}</span>
                   <span className="box-sub">Current Market Bar</span>
                 </div>
 
                 {/* Target */}
                 <div className="plan-target-box target-box">
                   <span className="box-label">TARGET (3.0x ATR)</span>
-                  <span className="box-val font-mono text-bullish-neon">₹{data.trade_plan.target_price.toFixed(2)}</span>
-                  <span className="box-sub text-bullish-text font-mono">+{data.trade_plan.target_pct.toFixed(2)}%</span>
+                  <span className="box-val font-mono text-bullish-neon">{formatCurrency(data.trade_plan?.target_price)}</span>
+                  <span className="box-sub text-bullish-text font-mono">+{formatNum(data.trade_plan?.target_pct, 2, '0.00')}%</span>
                 </div>
 
                 {/* Stoploss */}
                 <div className="plan-target-box sl-box">
                   <span className="box-label">STOPLOSS (1.5x ATR)</span>
-                  <span className="box-val font-mono text-bearish-neon">₹{data.trade_plan.stoploss_price.toFixed(2)}</span>
-                  <span className="box-sub text-bearish-text font-mono">-{data.trade_plan.stoploss_pct.toFixed(2)}%</span>
+                  <span className="box-val font-mono text-bearish-neon">{formatCurrency(data.trade_plan?.stoploss_price)}</span>
+                  <span className="box-sub text-bearish-text font-mono">-{formatNum(data.trade_plan?.stoploss_pct, 2, '0.00')}%</span>
                 </div>
 
                 {/* Risk / Reward */}
-                <div className={`plan-target-box rr-box ${data.trade_plan.risk_reward >= 1.8 ? 'rr-good' : 'rr-warn'}`}>
+                <div className={`plan-target-box rr-box ${(data.trade_plan?.risk_reward ?? 0) >= 1.8 ? 'rr-good' : 'rr-warn'}`}>
                   <span className="box-label">RISK / REWARD</span>
-                  <span className="box-val font-mono">1 : {data.trade_plan.risk_reward.toFixed(2)}</span>
+                  <span className="box-val font-mono">1 : {formatNum(data.trade_plan?.risk_reward, 2, '2.00')}</span>
                   <span className="box-sub">
-                    {data.trade_plan.risk_reward >= 1.8 ? 'Meets Min 1.8 R/R' : 'Below 1.8 Threshold'}
+                    {(data.trade_plan?.risk_reward ?? 0) >= 1.8 ? 'Meets Min 1.8 R/R' : 'Below 1.8 Threshold'}
                   </span>
                 </div>
               </div>
@@ -1035,9 +1143,9 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
               {/* Visual Trade Plan Slider */}
               <div className="plan-slider-wrap">
                 <div className="slider-markers-labels font-mono">
-                  <span className="sl-marker-label">SL: ₹{data.trade_plan.stoploss_price.toFixed(2)} (-{data.trade_plan.stoploss_pct.toFixed(1)}%)</span>
-                  <span className="entry-marker-label">Entry: ₹{data.trade_plan.entry_price.toFixed(2)}</span>
-                  <span className="tg-marker-label">Target: ₹{data.trade_plan.target_price.toFixed(2)} (+{data.trade_plan.target_pct.toFixed(1)}%)</span>
+                  <span className="sl-marker-label">SL: {formatCurrency(data.trade_plan?.stoploss_price)} (-{formatNum(data.trade_plan?.stoploss_pct, 1, '0.0')}%)</span>
+                  <span className="entry-marker-label">Entry: {formatCurrency(data.trade_plan?.entry_price || data.current_price)}</span>
+                  <span className="tg-marker-label">Target: {formatCurrency(data.trade_plan?.target_price)} (+{formatNum(data.trade_plan?.target_pct, 1, '0.0')}%)</span>
                 </div>
                 <div className="plan-slider-track">
                   <div className="slider-sl-zone" style={{ width: '33%' }} />
@@ -1048,15 +1156,15 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
 
               {/* Dynamic Position Sizing Calculator Drawer */}
               <PositionSizingCalculator
-                entryPrice={data.trade_plan.entry_price}
-                stoplossPrice={data.trade_plan.stoploss_price}
-                targetPrice={data.trade_plan.target_price}
+                entryPrice={data.trade_plan?.entry_price || data.current_price}
+                stoplossPrice={data.trade_plan?.stoploss_price}
+                targetPrice={data.trade_plan?.target_price}
               />
             </div>
           </section>
 
           {/* ===================================================================== */}
-          {/* SECTION 2: INTERACTIVE 45-SESSION CANDLESTICK & VOLUME CHART          */}
+          {/* SECTION 2: INTERACTIVE CANDLESTICK & VOLUME CHART                     */}
           {/* ===================================================================== */}
           {data.recent_history && data.recent_history.length > 0 && (
             <section className="glass-panel algo-section-card">
@@ -1066,14 +1174,14 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                   <h3 className="section-title">Interactive Price Action & Technical Moving Averages</h3>
                 </div>
                 <span className="section-pill font-mono">
-                  45 Daily Sessions • EMA 20 & 50 Overlay
+                  {data.recent_history.length} Daily Sessions • EMA 20 & 50 Overlay
                 </span>
               </div>
 
               <InteractiveCandleChart
                 history={data.recent_history}
                 currentPrice={data.current_price}
-                symbol={data.symbol}
+                symbol={data.symbol || symbol}
               />
             </section>
           )}
@@ -1093,23 +1201,23 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                     className={`filter-pill ${checkFilter === 'all' ? 'active' : ''}`}
                     onClick={() => setCheckFilter('all')}
                   >
-                    All ({data.buy_checks_total})
+                    All ({data.buy_checks_total ?? 8})
                   </button>
                   <button
                     className={`filter-pill ${checkFilter === 'passed' ? 'active' : ''}`}
                     onClick={() => setCheckFilter('passed')}
                   >
-                    Passed ({data.buy_score})
+                    Passed ({data.buy_score ?? 0})
                   </button>
                   <button
                     className={`filter-pill ${checkFilter === 'failed' ? 'active' : ''}`}
                     onClick={() => setCheckFilter('failed')}
                   >
-                    Failed ({data.buy_checks_total - data.buy_score})
+                    Failed ({(data.buy_checks_total ?? 8) - (data.buy_score ?? 0)})
                   </button>
                 </div>
                 <span className="section-pill font-mono">
-                  {data.buy_score} / {data.buy_checks_total} Criteria Passed
+                  {data.buy_score ?? 0} / {data.buy_checks_total ?? 8} Criteria Passed
                 </span>
               </div>
             </div>
@@ -1183,11 +1291,11 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="indicator-box">
                   <div className="ind-header">
                     <span className="ind-name">RSI (14)</span>
-                    <span className={`ind-badge ${data.indicators.rsi_status === 'OVERBOUGHT' ? 'badge-danger' : (data.indicators.rsi_status === 'OVERSOLD' ? 'badge-bullish' : 'badge-neutral')}`}>
-                      {data.indicators.rsi_status}
+                    <span className={`ind-badge ${data.indicators?.rsi_status === 'OVERBOUGHT' ? 'badge-danger' : (data.indicators?.rsi_status === 'OVERSOLD' ? 'badge-bullish' : 'badge-neutral')}`}>
+                      {data.indicators?.rsi_status || 'OPTIMAL'}
                     </span>
                   </div>
-                  <div className="ind-val font-mono">{data.indicators.rsi.toFixed(1)}</div>
+                  <div className="ind-val font-mono">{formatNum(data.indicators?.rsi, 1)}</div>
                   <div className="ind-sub">Optimal swing band: 45 - 72</div>
                 </div>
 
@@ -1195,11 +1303,11 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="indicator-box">
                   <div className="ind-header">
                     <span className="ind-name">ADX (14)</span>
-                    <span className={`ind-badge ${data.indicators.adx_status === 'STRONG' ? 'badge-bullish' : 'badge-neutral'}`}>
-                      {data.indicators.adx_status} TREND
+                    <span className={`ind-badge ${data.indicators?.adx_status === 'STRONG' ? 'badge-bullish' : 'badge-neutral'}`}>
+                      {data.indicators?.adx_status || 'TREND'}
                     </span>
                   </div>
-                  <div className="ind-val font-mono">{data.indicators.adx.toFixed(1)}</div>
+                  <div className="ind-val font-mono">{formatNum(data.indicators?.adx, 1)}</div>
                   <div className="ind-sub">Trend strength filter (&gt;20)</div>
                 </div>
 
@@ -1207,12 +1315,12 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="indicator-box">
                   <div className="ind-header">
                     <span className="ind-name">Supertrend (10, 3)</span>
-                    <span className={`ind-badge ${data.indicators.supertrend === 'BULLISH' ? 'badge-bullish' : 'badge-danger'}`}>
-                      {data.indicators.supertrend}
+                    <span className={`ind-badge ${data.indicators?.supertrend === 'BULLISH' ? 'badge-bullish' : 'badge-danger'}`}>
+                      {data.indicators?.supertrend || 'NEUTRAL'}
                     </span>
                   </div>
-                  <div className="ind-val font-mono" style={{ color: data.indicators.supertrend === 'BULLISH' ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
-                    {data.indicators.supertrend}
+                  <div className="ind-val font-mono" style={{ color: data.indicators?.supertrend === 'BULLISH' ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
+                    {data.indicators?.supertrend || 'NEUTRAL'}
                   </div>
                   <div className="ind-sub">ATR trailing volatility band</div>
                 </div>
@@ -1223,7 +1331,7 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                     <span className="ind-name">Average True Range (14)</span>
                     <span className="ind-badge badge-neutral">VOLATILITY</span>
                   </div>
-                  <div className="ind-val font-mono">₹{data.indicators.atr.toFixed(2)}</div>
+                  <div className="ind-val font-mono">{formatCurrency(data.indicators?.atr)}</div>
                   <div className="ind-sub">SL multiplier: 1.5x | Target: 3.0x</div>
                 </div>
 
@@ -1231,12 +1339,12 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="indicator-box">
                   <div className="ind-header">
                     <span className="ind-name">MACD Histogram</span>
-                    <span className={`ind-badge ${data.indicators.macd_status === 'POSITIVE' ? 'badge-bullish' : 'badge-danger'}`}>
-                      {data.indicators.macd_status}
+                    <span className={`ind-badge ${data.indicators?.macd_status === 'POSITIVE' ? 'badge-bullish' : 'badge-danger'}`}>
+                      {data.indicators?.macd_status || 'NEUTRAL'}
                     </span>
                   </div>
-                  <div className="ind-val font-mono" style={{ color: data.indicators.macd_hist >= 0 ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
-                    {data.indicators.macd_hist > 0 ? `+${data.indicators.macd_hist.toFixed(2)}` : data.indicators.macd_hist.toFixed(2)}
+                  <div className="ind-val font-mono" style={{ color: (data.indicators?.macd_hist ?? 0) >= 0 ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
+                    {(data.indicators?.macd_hist ?? 0) > 0 ? `+${formatNum(data.indicators?.macd_hist, 2)}` : formatNum(data.indicators?.macd_hist, 2)}
                   </div>
                   <div className="ind-sub">12/26/9 MACD momentum spread</div>
                 </div>
@@ -1245,11 +1353,11 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="indicator-box">
                   <div className="ind-header">
                     <span className="ind-name">Volume Ratio (vs 20D)</span>
-                    <span className={`ind-badge ${data.indicators.vol_status === 'SURGE' ? 'badge-bullish' : 'badge-neutral'}`}>
-                      {data.indicators.vol_status}
+                    <span className={`ind-badge ${data.indicators?.vol_status === 'SURGE' ? 'badge-bullish' : 'badge-neutral'}`}>
+                      {data.indicators?.vol_status || 'NORMAL'}
                     </span>
                   </div>
-                  <div className="ind-val font-mono">{data.indicators.vol_ratio.toFixed(2)}x</div>
+                  <div className="ind-val font-mono">{formatNum(data.indicators?.vol_ratio, 2)}x</div>
                   <div className="ind-sub">&gt;1.5x triggers institutional surge</div>
                 </div>
 
@@ -1257,12 +1365,12 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="indicator-box">
                   <div className="ind-header">
                     <span className="ind-name">RS vs NIFTY 50 (20D)</span>
-                    <span className={`ind-badge ${data.indicators.rs_status === 'OUTPERFORMING' ? 'badge-bullish' : 'badge-danger'}`}>
-                      {data.indicators.rs_status}
+                    <span className={`ind-badge ${data.indicators?.rs_status === 'OUTPERFORMING' ? 'badge-bullish' : 'badge-danger'}`}>
+                      {data.indicators?.rs_status || 'ALIGNED'}
                     </span>
                   </div>
-                  <div className="ind-val font-mono" style={{ color: data.indicators.rs_vs_nifty_pct >= 0 ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
-                    {data.indicators.rs_vs_nifty_pct >= 0 ? `+${data.indicators.rs_vs_nifty_pct.toFixed(2)}%` : `${data.indicators.rs_vs_nifty_pct.toFixed(2)}%`}
+                  <div className="ind-val font-mono" style={{ color: (data.indicators?.rs_vs_nifty_pct ?? 0) >= 0 ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
+                    {(data.indicators?.rs_vs_nifty_pct ?? 0) >= 0 ? `+${formatNum(data.indicators?.rs_vs_nifty_pct, 2)}%` : `${formatNum(data.indicators?.rs_vs_nifty_pct, 2)}%`}
                   </div>
                   <div className="ind-sub">Relative alpha vs benchmark</div>
                 </div>
@@ -1274,10 +1382,10 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                     <span className="ind-badge badge-neutral">20 / 50 / 200</span>
                   </div>
                   <div className="ind-val font-mono" style={{ fontSize: '0.88rem' }}>
-                    ₹{data.indicators.ema20.toFixed(0)} / ₹{data.indicators.ema50.toFixed(0)} / ₹{data.indicators.ema200.toFixed(0)}
+                    {formatCurrency(data.indicators?.ema20, 0)} / {formatCurrency(data.indicators?.ema50, 0)} / {formatCurrency(data.indicators?.ema200, 0)}
                   </div>
                   <div className="ind-sub font-mono" style={{ fontSize: '0.70rem' }}>
-                    Dist: {data.indicators.dist_ema20_pct > 0 ? `+${data.indicators.dist_ema20_pct}%` : `${data.indicators.dist_ema20_pct}%`} vs EMA20
+                    Dist: {(data.indicators?.dist_ema20_pct ?? 0) > 0 ? `+${formatNum(data.indicators?.dist_ema20_pct, 2)}%` : `${formatNum(data.indicators?.dist_ema20_pct, 2)}%`} vs EMA20
                   </div>
                 </div>
               </div>
@@ -1290,7 +1398,7 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                   <Layers size={18} className="text-accent-cyan" />
                   <h3 className="section-title">Multi-Timeframe & Model Validation</h3>
                 </div>
-                <span className="section-pill font-mono">5-Fold TimeSeriesSplit</span>
+                <span className="section-pill font-mono">{data.model_quality?.n_splits || 5}-Fold TimeSeriesSplit</span>
               </div>
 
               {/* Multi-Timeframe Alignment */}
@@ -1298,8 +1406,8 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="mtf-card">
                   <span className="mtf-label">WEEKLY HIGHER TIMEFRAME TREND</span>
                   <div className="mtf-status-row">
-                    <span className={`mtf-badge ${data.multi_timeframe.weekly_trend === 'BULLISH' ? 'badge-bullish' : 'badge-danger'}`}>
-                      {data.multi_timeframe.weekly_trend}
+                    <span className={`mtf-badge ${data.multi_timeframe?.weekly_trend === 'BULLISH' ? 'badge-bullish' : 'badge-danger'}`}>
+                      {data.multi_timeframe?.weekly_trend || 'NEUTRAL'}
                     </span>
                     <span className="mtf-detail">Weekly EMA 20 vs EMA 50 alignment</span>
                   </div>
@@ -1308,30 +1416,30 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <div className="mtf-card">
                   <span className="mtf-label">LONG-TERM STRUCTURAL REGIME</span>
                   <div className="mtf-status-row">
-                    <span className={`mtf-badge ${data.multi_timeframe.above_ema200 ? 'badge-bullish' : 'badge-danger'}`}>
-                      {data.multi_timeframe.above_ema200 ? 'ABOVE EMA 200' : 'BELOW EMA 200'}
+                    <span className={`mtf-badge ${data.multi_timeframe?.above_ema200 ? 'badge-bullish' : 'badge-danger'}`}>
+                      {data.multi_timeframe?.above_ema200 ? 'ABOVE EMA 200' : 'BELOW EMA 200'}
                     </span>
-                    <span className="mtf-detail">{data.multi_timeframe.above_ema200_label}</span>
+                    <span className="mtf-detail">{data.multi_timeframe?.above_ema200_label || ''}</span>
                   </div>
                 </div>
               </div>
 
-              {/* XGBoost 5-Fold Cross Validation */}
+              {/* XGBoost Cross Validation */}
               <div className="model-cv-box">
                 <div className="cv-header-row">
                   <span className="cv-title">XGBoost Cross-Validation Accuracy</span>
                   <span className="cv-mean-score font-mono">
-                    {data.model_quality.avg_accuracy_pct.toFixed(2)}% ± {data.model_quality.std_accuracy_pct.toFixed(2)}%
+                    {formatNum(data.model_quality?.avg_accuracy_pct, 2, '0.00')}% ± {formatNum(data.model_quality?.std_accuracy_pct, 2, '0.00')}%
                   </span>
                 </div>
 
                 <div className="folds-grid">
-                  {data.model_quality.fold_scores.map((score, fIdx) => (
+                  {(data.model_quality?.fold_scores || []).map((score, fIdx) => (
                     <div key={fIdx} className="fold-box">
                       <span className="fold-name">Fold {fIdx + 1}</span>
-                      <span className="fold-val font-mono">{score.toFixed(1)}%</span>
+                      <span className="fold-val font-mono">{formatNum(score, 1)}%</span>
                       <div className="fold-bar-track">
-                        <div className="fold-bar-fill" style={{ width: `${Math.min(100, score)}%` }} />
+                        <div className="fold-bar-fill" style={{ width: `${Math.min(100, Math.max(0, Number(score) || 0))}%` }} />
                       </div>
                     </div>
                   ))}
@@ -1339,13 +1447,13 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
               </div>
 
               {/* Top Feature Importances */}
-              {data.model_quality.feature_importances && data.model_quality.feature_importances.length > 0 && (
+              {data.model_quality?.feature_importances && data.model_quality.feature_importances.length > 0 && (
                 <div className="feature-importance-box">
                   <span className="feat-title">Top ML Features Impact:</span>
                   <div className="feat-tags-row">
                     {data.model_quality.feature_importances.map((f, idx) => (
                       <span key={idx} className="feat-tag font-mono">
-                        {f.feature} ({f.importance}%)
+                        {f.feature} ({formatNum(f.importance, 1)}%)
                       </span>
                     ))}
                   </div>
@@ -1364,7 +1472,7 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                 <h3 className="section-title">Walk-Forward Backtesting (Last 20% Out-Of-Sample Data)</h3>
               </div>
               <span className="section-pill font-mono">
-                {data.backtest.total_trades} Simulated Trades
+                {data.backtest?.total_trades ?? 0} Simulated Trades
               </span>
             </div>
 
@@ -1372,14 +1480,14 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
             <div className="backtest-stats-grid">
               <div className="bt-stat-card">
                 <span className="bt-stat-label">WIN RATE</span>
-                <span className="bt-stat-val font-mono text-bullish-neon">{data.backtest.win_rate_pct.toFixed(1)}%</span>
-                <span className="bt-stat-sub font-mono">{data.backtest.wins} Wins / {data.backtest.losses} Losses</span>
+                <span className="bt-stat-val font-mono text-bullish-neon">{formatNum(data.backtest?.win_rate_pct, 1, '0.0')}%</span>
+                <span className="bt-stat-sub font-mono">{data.backtest?.wins ?? 0} Wins / {data.backtest?.losses ?? 0} Losses</span>
               </div>
 
               <div className="bt-stat-card">
                 <span className="bt-stat-label">AVG PROFIT / TRADE</span>
-                <span className="bt-stat-val font-mono" style={{ color: data.backtest.avg_profit_pct >= 0 ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
-                  {data.backtest.avg_profit_pct >= 0 ? `+${data.backtest.avg_profit_pct.toFixed(2)}%` : `${data.backtest.avg_profit_pct.toFixed(2)}%`}
+                <span className="bt-stat-val font-mono" style={{ color: (data.backtest?.avg_profit_pct ?? 0) >= 0 ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
+                  {(data.backtest?.avg_profit_pct ?? 0) >= 0 ? `+${formatNum(data.backtest?.avg_profit_pct, 2)}%` : `${formatNum(data.backtest?.avg_profit_pct, 2)}%`}
                 </span>
                 <span className="bt-stat-sub">5-day swing horizon</span>
               </div>
@@ -1387,25 +1495,25 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
               <div className="bt-stat-card">
                 <span className="bt-stat-label">PROFIT FACTOR</span>
                 <span className="bt-stat-val font-mono text-accent-cyan">
-                  {data.backtest.profit_factor > 0 ? data.backtest.profit_factor.toFixed(2) : 'N/A'}
+                  {(data.backtest?.profit_factor ?? 0) > 0 ? formatNum(data.backtest?.profit_factor, 2) : 'N/A'}
                 </span>
-                <span className="bt-stat-sub">{data.backtest.profit_factor_label} Risk-Adjusted Ratio</span>
+                <span className="bt-stat-sub">{data.backtest?.profit_factor_label || 'GOOD'} Risk-Adjusted Ratio</span>
               </div>
 
               <div className="bt-stat-card">
                 <span className="bt-stat-label">MAX DRAWDOWN</span>
-                <span className="bt-stat-val font-mono text-bearish-neon">{data.backtest.max_drawdown_pct.toFixed(2)}%</span>
+                <span className="bt-stat-val font-mono text-bearish-neon">{formatNum(data.backtest?.max_drawdown_pct, 2, '0.00')}%</span>
                 <span className="bt-stat-sub">Peak-to-trough drop</span>
               </div>
             </div>
 
             {/* Interactive Cumulative Return Curve */}
-            {data.backtest.cumulative_returns && data.backtest.cumulative_returns.length > 0 && (
+            {data.backtest?.cumulative_returns && data.backtest.cumulative_returns.length > 0 && (
               <InteractiveEquityCurve returns={data.backtest.cumulative_returns} />
             )}
 
             {/* Recent Trades Table with Filter Tabs */}
-            {data.backtest.trades && data.backtest.trades.length > 0 && (
+            {data.backtest?.trades && data.backtest.trades.length > 0 && (
               <div className="recent-trades-container">
                 <div className="trades-table-header">
                   <div className="trades-table-title">Recent Walk-Forward Trades Log</div>
@@ -1446,17 +1554,17 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
                     <tbody>
                       {filteredTrades.map((t, idx) => (
                         <tr key={idx}>
-                          <td className="font-mono text-muted">{t.date}</td>
-                          <td className="font-mono">₹{t.entry.toFixed(2)}</td>
-                          <td className="font-mono">₹{t.exit.toFixed(2)}</td>
-                          <td className="font-mono">{t.ai_prob}%</td>
+                          <td className="font-mono text-muted">{t.date || '—'}</td>
+                          <td className="font-mono">{formatCurrency(t.entry)}</td>
+                          <td className="font-mono">{formatCurrency(t.exit)}</td>
+                          <td className="font-mono">{formatNum(t.ai_prob, 1)}%</td>
                           <td>
                             <span className={`trade-status-chip ${t.won ? 'trade-won' : 'trade-lost'}`}>
                               {t.won ? 'WIN' : 'LOSS'}
                             </span>
                           </td>
-                          <td className="font-mono" style={{ textAlign: 'right', fontWeight: 700, color: t.return_pct >= 0 ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
-                            {t.return_pct >= 0 ? `+${t.return_pct.toFixed(2)}%` : `${t.return_pct.toFixed(2)}%`}
+                          <td className="font-mono" style={{ textAlign: 'right', fontWeight: 700, color: (t.return_pct ?? 0) >= 0 ? 'var(--bullish-neon)' : 'var(--bearish-neon)' }}>
+                            {(t.return_pct ?? 0) >= 0 ? `+${formatNum(t.return_pct, 2)}%` : `${formatNum(t.return_pct, 2)}%`}
                           </td>
                         </tr>
                       ))}

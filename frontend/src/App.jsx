@@ -29,18 +29,48 @@ import {
   Maximize2,
   Sun,
   Moon,
-  Square
+  Square,
+  Server,
+  Wifi,
+  WifiOff,
+  User,
+  Lock
 } from 'lucide-react'
 import './App.css'
 import AlgoSignals from './AlgoSignals'
+import { App as CapApp } from '@capacitor/app'
+import { StatusBar, Style } from '@capacitor/status-bar'
+import { Capacitor } from '@capacitor/core'
+import { apiFetch } from './apiClient'
 
-// Dynamic API Base URL configuration for Render deployment (supports both unified and separate services)
-const RAW_API_URL = import.meta.env.VITE_API_URL || ''
-const API_BASE = RAW_API_URL
-  ? (RAW_API_URL.startsWith('http') ? RAW_API_URL : `https://${RAW_API_URL}`).replace(/\/+$/, '')
-  : ''
+// Default Production Server URL
+const DEFAULT_SERVER_URL = 'https://nse-semi-algo-1.onrender.com'
+
+// Resolve API Base URL with priority: Custom runtime override > VITE_API_BASE_URL > VITE_API_URL > Default Production URL
+const getInitialApiBase = () => {
+  try {
+    const custom = typeof window !== 'undefined' ? localStorage.getItem('upstox_custom_api_url') : null
+    if (custom && custom.trim()) {
+      return custom.trim().replace(/\/+$/, '')
+    }
+  } catch {}
+  const envUrl = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || DEFAULT_SERVER_URL).trim()
+  if (envUrl) {
+    return (envUrl.startsWith('http') ? envUrl : `https://${envUrl}`).replace(/\/+$/, '')
+  }
+  return DEFAULT_SERVER_URL
+}
 
 export default function App() {
+  const [apiBase, setApiBase] = useState(getInitialApiBase)
+  const API_BASE = apiBase
+
+  // Mobile / Server Configuration modal state
+  const [showServerModal, setShowServerModal] = useState(false)
+  const [serverUrlInput, setServerUrlInput] = useState(() => getInitialApiBase() || DEFAULT_SERVER_URL)
+  const [serverTestStatus, setServerTestStatus] = useState(null) // null | 'testing' | 'success' | 'failed'
+  const [serverTestError, setServerTestError] = useState(null)
+  const [backendOffline, setBackendOffline] = useState(false)
   // Theme state: 'dark' (Black Obsidian Glass) vs 'light' (White Crystal Glass)
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('upstox_glass_theme') || 'dark'
@@ -55,7 +85,7 @@ export default function App() {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))
   }
 
-  // Navigation: 'scanner' (App 1) vs 'screener' (App 2) vs 'scorer' (App 3)
+  // Navigation: 'scanner' (App 1) vs 'algo_signals' (App 2)
   const [activeApp, setActiveApp] = useState('scanner')
 
   const [authStatus, setAuthStatus] = useState({
@@ -67,14 +97,12 @@ export default function App() {
     message: null
   })
 
-  // Direct Token state
-  const [directToken, setDirectToken] = useState('')
-  const [isSubmittingToken, setIsSubmittingToken] = useState(false)
-  const [showToken, setShowToken] = useState(false)
-  const [authTab, setAuthTab] = useState('token') // 'token' or 'oauth'
-  const [showUpdateModal, setShowUpdateModal] = useState(false)
-  const [updateTokenInput, setUpdateTokenInput] = useState('')
-  const [showUpdateToken, setShowUpdateToken] = useState(false)
+  // Single User Authentication state (username: suriyaprakash, password: master730)
+  const [loginUsername, setLoginUsername] = useState('suriyaprakash')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [loginError, setLoginError] = useState(null)
 
   // Scanner state (App 1)
   const [scanStatus, setScanStatus] = useState({
@@ -106,84 +134,282 @@ export default function App() {
     return () => clearInterval(timer)
   }, [])
 
-  // Screener & Double Confirmation state (App 2)
-  const [screenerSymbol, setScreenerSymbol] = useState('RELIANCE')
-  const [screenerInput, setScreenerInput] = useState('RELIANCE')
-  const [screenerData, setScreenerData] = useState(null)
-  const [isAnalyzing, setIsAnalyzing] = useState(false)
-  const [screenerError, setScreenerError] = useState(null)
-
-  // Stock Perfection Engine state (App 3)
-  const [scorerSymbol, setScorerSymbol] = useState('RELIANCE')
-  const [scorerInput, setScorerInput] = useState('RELIANCE')
-  const [scorerData, setScorerData] = useState(null)
-  const [isScoring, setIsScoring] = useState(false)
-  const [scorerError, setScorerError] = useState(null)
-  const [leaderboard, setLeaderboard] = useState([])
-  const [leaderboardLoading, setLeaderboardLoading] = useState(false)
-  const [leaderboardFilter, setLeaderboardFilter] = useState('ALL') // ALL, PERFECT, BULLISH
   const [algoSymbol, setAlgoSymbol] = useState('RELIANCE')
 
   const POPULAR_STOCKS = ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'TATAMOTORS', 'SBIN', 'ITC', 'BHARTIARTL', 'LT', 'ICICIBANK']
 
-  // 1. Check Authentication Status on mount
+  // Server connection handlers for Android & local/cloud testing
+  const handleTestServerConnection = async (testUrl) => {
+    setServerTestStatus('testing')
+    setServerTestError(null)
+    const cleanUrl = (testUrl || serverUrlInput || '').trim().replace(/\/+$/, '')
+    if (!cleanUrl) {
+      setServerTestStatus('failed')
+      setServerTestError('Please enter a server URL (e.g. http://192.168.1.10:8000 or https://your-server.onrender.com)')
+      return
+    }
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 30000)
+      const res = await apiFetch(`${cleanUrl}/health`, { signal: controller.signal })
+      clearTimeout(timeoutId)
+      if (res.ok) {
+        setServerTestStatus('success')
+        setBackendOffline(false)
+      } else {
+        setServerTestStatus('failed')
+        setServerTestError(`Server responded with HTTP ${res.status}`)
+      }
+    } catch (err) {
+      setServerTestStatus('failed')
+      setServerTestError(
+        err.name === 'AbortError'
+          ? 'Connection timed out (30s). If using Render free tier, server was sleeping - please retry in 10 seconds.'
+          : (err.message || 'Network error')
+      )
+    }
+  }
+
+  const handleSaveServerUrl = () => {
+    const cleanUrl = serverUrlInput.trim().replace(/\/+$/, '')
+    try {
+      localStorage.setItem('upstox_custom_api_url', cleanUrl)
+    } catch {}
+    setApiBase(cleanUrl)
+    setShowServerModal(false)
+    setBackendOffline(false)
+  }
+
+  const handleResetServerUrl = () => {
+    try {
+      localStorage.removeItem('upstox_custom_api_url')
+    } catch {}
+    const envUrl = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || DEFAULT_SERVER_URL).trim()
+    const defaultUrl = envUrl ? (envUrl.startsWith('http') ? envUrl : `https://${envUrl}`).replace(/\/+$/, '') : DEFAULT_SERVER_URL
+    setServerUrlInput(defaultUrl)
+    setApiBase(defaultUrl)
+    setShowServerModal(false)
+    setBackendOffline(false)
+  }
+
+  // Render Server API Configuration Modal (for mobile & dev)
+  const renderServerModal = () => {
+    if (!showServerModal) return null
+    return (
+      <div className="modal-backdrop" onClick={() => setShowServerModal(false)}>
+        <div className="modal-card glass-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '490px', width: '92%' }}>
+          <div className="modal-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Server size={18} style={{ color: 'var(--accent-cyan)' }} />
+              <span style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-main)' }}>
+                Backend API Server Settings
+              </span>
+            </div>
+            <button
+              className="btn-icon-subtle"
+              onClick={() => setShowServerModal(false)}
+              title="Close modal"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', paddingTop: '10px' }}>
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-sub)', lineHeight: 1.5 }}>
+              Configure the Python FastAPI backend URL for this app.
+              {Capacitor.isNativePlatform() && (
+                <div style={{ marginTop: '6px', color: 'var(--accent-cyan)', fontWeight: 600 }}>
+                  📱 Running in Android app mode. Connect to your deployed HTTPS API (e.g. Render) or your local PC Wi-Fi IP (e.g. <code>http://192.168.1.5:8000</code>).
+                </div>
+              )}
+            </div>
+
+            <div className="token-input-container">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                <span>API BASE URL</span>
+                <span className="font-mono" style={{ color: 'var(--accent-cyan)', fontSize: '0.7rem' }}>
+                  {apiBase || '(Relative proxy)'}
+                </span>
+              </div>
+              <input
+                type="text"
+                className="token-input"
+                style={{ width: '100%', marginTop: '6px' }}
+                placeholder="https://nse-semi-algo-1.onrender.com or http://192.168.1.15:8000"
+                value={serverUrlInput}
+                onChange={(e) => {
+                  setServerUrlInput(e.target.value)
+                  setServerTestStatus(null)
+                  setServerTestError(null)
+                }}
+              />
+            </div>
+
+            {/* Status / Test feedback */}
+            {serverTestStatus === 'testing' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.78rem', color: 'var(--accent-cyan)' }}>
+                <RotateCw className="animate-spin" size={13} />
+                <span>Checking {serverUrlInput || 'server'}/health ...</span>
+              </div>
+            )}
+            {serverTestStatus === 'success' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.78rem', color: 'var(--bullish-text)' }}>
+                <CheckCircle2 size={14} />
+                <span>Backend reachable! Health check OK.</span>
+              </div>
+            )}
+            {serverTestStatus === 'failed' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.78rem', color: 'var(--bearish-text)' }}>
+                <AlertCircle size={14} />
+                <span>{serverTestError || 'Could not connect. Check URL, port, and network.'}</span>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '10px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleResetServerUrl}
+                style={{ fontSize: '0.75rem', padding: '6px 10px' }}
+                title="Reset to build environment default"
+              >
+                Reset Default
+              </button>
+
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => handleTestServerConnection(serverUrlInput)}
+                  disabled={serverTestStatus === 'testing' || !serverUrlInput.trim()}
+                  style={{ fontSize: '0.78rem', padding: '6px 12px' }}
+                >
+                  Test Health
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSaveServerUrl}
+                  style={{ fontSize: '0.78rem', padding: '6px 14px' }}
+                >
+                  Save & Connect
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Android Hardware & Gesture Back Button Handling
+  useEffect(() => {
+    let backHandle = null
+    const registerBackButton = async () => {
+      try {
+        backHandle = await CapApp.addListener('backButton', () => {
+          if (showServerModal) {
+            setShowServerModal(false)
+          } else if (activeApp !== 'scanner') {
+            setActiveApp('scanner')
+          } else {
+            CapApp.exitApp()
+          }
+        })
+      } catch (e) {
+        // Safe fallback in standard web browser
+      }
+    }
+    registerBackButton()
+    return () => {
+      if (backHandle && backHandle.remove) {
+        backHandle.remove()
+      }
+    }
+  }, [showServerModal, activeApp])
+
+  // Android Status Bar Theme Synchronization
+  useEffect(() => {
+    try {
+      if (Capacitor.isNativePlatform()) {
+        if (theme === 'dark') {
+          StatusBar.setStyle({ style: Style.Dark }).catch(() => {})
+          StatusBar.setBackgroundColor({ color: '#070f1e' }).catch(() => {})
+        } else {
+          StatusBar.setStyle({ style: Style.Light }).catch(() => {})
+          StatusBar.setBackgroundColor({ color: '#ffffff' }).catch(() => {})
+        }
+      }
+    } catch (e) {
+      // Safe fallback
+    }
+  }, [theme])
+
+  // 1. Check Authentication Status on mount and whenever apiBase changes
   const checkAuth = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/auth/status`)
+      const targetUrl = apiBase ? `${apiBase}/api/auth/status` : '/api/auth/status'
+      const res = await apiFetch(targetUrl)
       if (!res.ok) {
         setAuthStatus(prev => ({ ...prev, loading: false, authenticated: false }))
         return
       }
       const data = await res.json()
+      setBackendOffline(false)
       setAuthStatus({
         loading: false,
         authenticated: data.authenticated,
-        configured: data.configured !== false,
+        configured: true,
         user_id: data.user_id,
         user_name: data.user_name,
         message: data.message
       })
       if (data.authenticated) {
         fetchResults()
-        loadStockAnalysis('RELIANCE')
-        loadStockPerfection('RELIANCE')
-        loadLeaderboard()
       }
     } catch (err) {
       console.error('Failed to fetch auth status:', err)
-      setAuthStatus({
-        loading: false,
-        authenticated: false,
-        configured: true,
-        user_id: null,
-        user_name: null,
-        message: 'Could not connect to backend service.'
-      })
+      setBackendOffline(true)
+      try {
+        const token = localStorage.getItem('sma_auth_token')
+        const user = localStorage.getItem('sma_user')
+        if (token && user) {
+          setAuthStatus({
+            loading: false,
+            authenticated: true,
+            configured: true,
+            user_id: user,
+            user_name: user,
+            message: 'Active session'
+          })
+          fetchResults()
+        } else {
+          setAuthStatus({
+            loading: false,
+            authenticated: false,
+            configured: true,
+            user_id: null,
+            user_name: null,
+            message: 'Could not connect to backend service.'
+          })
+        }
+      } catch {
+        setAuthStatus(prev => ({ ...prev, loading: false, authenticated: false }))
+      }
     }
   }
 
   useEffect(() => {
-    // Handle URL search params
-    const params = new URLSearchParams(window.location.search)
-    if (params.get('auth') === 'success') {
-      window.history.replaceState({}, document.title, window.location.pathname)
-    }
-    const authError = params.get('auth_error')
-    if (authError) {
-      setErrorMessage(`Upstox login error: ${params.get('error_desc') || authError}`)
-      window.history.replaceState({}, document.title, window.location.pathname)
-    }
-
     checkAuth()
-  }, [])
+  }, [apiBase])
 
   // 2. Fetch Latest Results (App 1)
   const fetchResults = async () => {
     setIsRefreshing(true)
     try {
-      const res = await fetch(`${API_BASE}/api/scanner/results`)
+      const res = await apiFetch(`${API_BASE}/api/scanner/results`)
       if (res.status === 401) {
-        setAuthStatus(prev => ({ ...prev, authenticated: false, message: 'Upstox authentication expired.' }))
+        setAuthStatus(prev => ({ ...prev, authenticated: false, message: 'Session expired. Please sign in again.' }))
         return
       }
       if (!res.ok) return
@@ -205,7 +431,7 @@ export default function App() {
     if (scanStatus.is_running) {
       intervalId = setInterval(async () => {
         try {
-          const res = await fetch(`${API_BASE}/api/scanner/status`)
+          const res = await apiFetch(`${API_BASE}/api/scanner/status`)
           if (!res.ok) return
           const data = await res.json()
           setScanStatus(data)
@@ -229,9 +455,9 @@ export default function App() {
     setErrorMessage(null)
     setSuccessMessage(null)
     try {
-      const res = await fetch(`${API_BASE}/api/scanner/run`, { method: 'POST' })
+      const res = await apiFetch(`${API_BASE}/api/scanner/run`, { method: 'POST' })
       if (res.status === 401) {
-        setErrorMessage('Upstox authentication expired. Please reconnect or enter your latest access token.')
+        setErrorMessage('Session expired. Please sign in again.')
         setAuthStatus(prev => ({ ...prev, authenticated: false }))
         return
       }
@@ -265,7 +491,7 @@ export default function App() {
   // Trigger Scanner Stop
   const handleStopScanner = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/scanner/stop`, { method: 'POST' })
+      const res = await apiFetch(`${API_BASE}/api/scanner/stop`, { method: 'POST' })
       if (res.ok) {
         setSuccessMessage('Scan abort initiated.')
       } else {
@@ -278,101 +504,65 @@ export default function App() {
     }
   }
 
-  // 5. Connect via Direct Access Token
-  const handleConnectWithToken = async (tokenString) => {
-    const token = (tokenString || directToken).trim()
-    if (!token) {
-      setErrorMessage('Please paste your Upstox access token.')
+  // 5. Single User Login Handler (suriyaprakash / master730)
+  const handleLogin = async (e) => {
+    if (e) e.preventDefault()
+    const username = loginUsername.trim()
+    const password = loginPassword.trim()
+
+    if (!username || !password) {
+      setLoginError('Please enter both username and password.')
       return
     }
 
-    setIsSubmittingToken(true)
-    setErrorMessage(null)
-    setSuccessMessage(null)
+    setIsLoggingIn(true)
+    setLoginError(null)
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/token`, {
+      const res = await apiFetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token })
+        body: JSON.stringify({ username, password })
       })
-      let data = {}
-      try {
-        data = await res.json()
-      } catch {
-        const text = await res.text()
-        data = { detail: text }
-      }
+
+      const data = await res.json()
       if (!res.ok) {
-        throw new Error(data.detail || data.message || 'Failed to verify Upstox access token')
+        throw new Error(data.detail || data.message || 'Invalid username or password')
       }
+
+      if (data.token) {
+        try { localStorage.setItem('sma_auth_token', data.token) } catch {}
+      }
+      try { localStorage.setItem('sma_user', data.user_name || username) } catch {}
 
       setAuthStatus({
         loading: false,
         authenticated: true,
         configured: true,
-        user_id: data.user_id,
-        user_name: data.user_name,
+        user_id: data.user_id || username,
+        user_name: data.user_name || username,
         message: data.message
       })
-      setDirectToken('')
-      setUpdateTokenInput('')
-      setShowUpdateModal(false)
-      setSuccessMessage(data.message || 'Connected to Upstox successfully!')
+      setSuccessMessage(`Welcome back, ${data.user_name || username}!`)
       fetchResults()
-      loadStockAnalysis('RELIANCE')
-      loadStockPerfection('RELIANCE')
-      loadLeaderboard()
     } catch (err) {
-      setErrorMessage(err.message)
+      setLoginError(err.message || 'Login failed. Please verify credentials.')
     } finally {
-      setIsSubmittingToken(false)
+      setIsLoggingIn(false)
     }
   }
 
-  // Quick Demo Mode (explore Glassmorphic UI, Screener, and Perfection Scorer instantly)
-  const handleEnterDemoMode = () => {
-    setAuthStatus({
-      loading: false,
-      authenticated: true,
-      configured: true,
-      user_id: 'DEMO_TRADER',
-      user_name: 'Quant Trader (Guest Demo)',
-      message: 'Active in Glassmorphism Preview Mode'
-    })
-    setSuccessMessage('Launched in Glassmorphic Demo Mode! Explore SMA Scanner, Screener Analysis, and Stock Perfection Score.')
-    fetchResults()
-    loadStockAnalysis('RELIANCE')
-    loadStockPerfection('RELIANCE')
-    loadLeaderboard()
-  }
-
-  // 6. Upstox OAuth Login Flow (Alternative)
-  const handleConnectUpstoxOAuth = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/auth/login`)
-      const data = await res.json()
-      if (!res.ok) {
-        setErrorMessage(data.detail || `Server error (${res.status})`)
-        return
-      }
-      if (data.auth_url) {
-        window.location.href = data.auth_url
-      } else {
-        setErrorMessage(data.detail || 'No authentication URL received from server.')
-      }
-    } catch (err) {
-      setErrorMessage(`Login initialization failed: ${err.message}`)
-    }
-  }
-
-  // 7. Logout
+  // 6. Logout Handler
   const handleLogout = async () => {
     try {
-      await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' })
+      await apiFetch(`${API_BASE}/api/auth/logout`, { method: 'POST' })
     } catch (err) {
-      console.warn('Logout error:', err)
+      console.warn('Logout warning:', err)
     } finally {
+      try {
+        localStorage.removeItem('sma_auth_token')
+        localStorage.removeItem('sma_user')
+      } catch {}
       setAuthStatus({
         loading: false,
         authenticated: false,
@@ -385,109 +575,11 @@ export default function App() {
     }
   }
 
-  // 8. Screener & Double Confirmation API (App 2)
-  const loadStockAnalysis = async (symbol) => {
-    const sym = (symbol || screenerSymbol).trim().toUpperCase()
-    if (!sym) return
-    setIsAnalyzing(true)
-    setScreenerError(null)
-    setScreenerSymbol(sym)
-    setScreenerInput(sym)
-
-    try {
-      const res = await fetch(`${API_BASE}/api/analysis/${encodeURIComponent(sym)}`)
-      if (!res.ok) {
-        let errDetail = 'Unable to fetch fundamental data'
-        try {
-          const errData = await res.json()
-          errDetail = errData.detail || errDetail
-        } catch {
-          const text = await res.text()
-          errDetail = text || errDetail
-        }
-        throw new Error(errDetail)
-      }
-      const data = await res.json()
-      setScreenerData(data)
-    } catch (err) {
-      setScreenerError(err.message)
-    } finally {
-      setIsAnalyzing(false)
-    }
-  }
-
-  const navigateToAnalysis = (symbol) => {
-    setActiveApp('screener')
-    loadStockAnalysis(symbol)
-  }
-
-  // 9. Stock Perfection Score API (App 3)
-  const loadStockPerfection = async (symbol) => {
-    const sym = (symbol || scorerSymbol).trim().toUpperCase()
-    if (!sym) return
-    setIsScoring(true)
-    setScorerError(null)
-    setScorerSymbol(sym)
-    setScorerInput(sym)
-
-    try {
-      const res = await fetch(`${API_BASE}/api/analysis/${encodeURIComponent(sym)}`)
-      if (!res.ok) {
-        let errDetail = 'Unable to compute stock perfection score'
-        try {
-          const errData = await res.json()
-          errDetail = errData.detail || errDetail
-        } catch {
-          const text = await res.text()
-          errDetail = text || errDetail
-        }
-        throw new Error(errDetail)
-      }
-      const data = await res.json()
-      setScorerData(data)
-    } catch (err) {
-      setScorerError(err.message)
-    } finally {
-      setIsScoring(false)
-    }
-  }
-
-  const loadLeaderboard = async () => {
-    setLeaderboardLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/scoring/leaderboard`)
-      if (res.ok) {
-        const data = await res.json()
-        if (data && data.leaderboard) {
-          setLeaderboard(data.leaderboard)
-        }
-      }
-    } catch (err) {
-      console.warn('Leaderboard fetch warning:', err)
-    } finally {
-      setLeaderboardLoading(false)
-    }
-  }
-
-  const navigateToPerfection = (symbol) => {
-    setActiveApp('scorer')
-    loadStockPerfection(symbol)
-  }
-
   const navigateToAlgoSignals = (symbol) => {
     setAlgoSymbol(symbol)
     setActiveApp('algo_signals')
   }
 
-  const filteredLeaderboard = useMemo(() => {
-    let list = [...leaderboard]
-    if (leaderboardFilter === 'PERFECT') {
-      list = list.filter(item => (item.perfection_score || 0) >= 75)
-    } else if (leaderboardFilter === 'BULLISH') {
-      list = list.filter(item => item.technical_signal === 'BULLISH')
-    }
-    return list
-  }, [leaderboard, leaderboardFilter])
 
   // Filter and Sort Results (App 1)
   const filteredAndSortedResults = useMemo(() => {
@@ -557,7 +649,7 @@ export default function App() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.setAttribute('download', `upstox_sma_scan_${new Date().toISOString().slice(0, 10)}.csv`)
+    link.setAttribute('download', `nse_sma_scan_${new Date().toISOString().slice(0, 10)}.csv`)
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -594,7 +686,7 @@ export default function App() {
           Initializing SMA 6 & 30 Quant Terminal...
         </div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-          Establishing Upstox v2 WebSocket Gateway Session
+          Connecting to NSE Quant Stream & yfinance Engine
         </div>
       </div>
     )
@@ -616,6 +708,21 @@ export default function App() {
           </div>
           <div className="header-actions">
             <button
+              id="btn-login-server-config"
+              className="btn btn-secondary"
+              onClick={() => {
+                setServerUrlInput(apiBase || '')
+                setServerTestStatus(null)
+                setServerTestError(null)
+                setShowServerModal(true)
+              }}
+              title="Configure Backend API Server URL"
+              style={{ padding: '6px 12px', fontSize: '0.78rem', gap: '6px' }}
+            >
+              <Server size={14} style={{ color: backendOffline ? 'var(--bearish-neon)' : 'var(--accent-cyan)' }} />
+              <span>Server API</span>
+            </button>
+            <button
               id="btn-login-theme-toggle"
               className="btn btn-secondary theme-toggle-btn"
               onClick={toggleTheme}
@@ -636,172 +743,148 @@ export default function App() {
             </button>
             <div className="gateway-status-pill">
               <span className="pulse-beacon" style={{ backgroundColor: 'var(--bearish-neon)' }} />
-              <span style={{ color: 'var(--bearish-text)', fontWeight: 600 }}>Upstox Disconnected</span>
+              <span style={{ color: 'var(--bearish-text)', fontWeight: 600 }}>Terminal Locked</span>
             </div>
           </div>
         </header>
 
+        {(backendOffline || (!apiBase && Capacitor.isNativePlatform())) && (
+          <div style={{
+            margin: '12px 20px 0',
+            padding: '10px 16px',
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: 'var(--bearish-bg)',
+            border: '1px solid var(--bearish-border)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            flexWrap: 'wrap'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.8rem', color: 'var(--bearish-text)' }}>
+              <WifiOff size={18} style={{ flexShrink: 0 }} />
+              <div>
+                <strong>Backend Unreachable:</strong> Cannot connect to FastAPI at <code>{apiBase || 'current host'}</code>.
+              </div>
+            </div>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setServerUrlInput(apiBase || '')
+                setServerTestStatus(null)
+                setServerTestError(null)
+                setShowServerModal(true)
+              }}
+              style={{ padding: '5px 12px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+            >
+              Configure Server URL
+            </button>
+          </div>
+        )}
+
         <main className="login-wrap">
           <div className="login-card glass-panel">
             <div className="login-badge">
-              <Key size={14} />
-              <span>Upstox v2 API Direct Token & OAuth Gateway</span>
+              <Shield size={14} />
+              <span>Terminal Security Gateway</span>
             </div>
 
             <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1.2 }}>
-              Institutional Crossover Scanner
+              Quantitative Stock Terminal
             </h1>
 
             <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', maxWidth: '440px', lineHeight: 1.5 }}>
-              Precision SMA 6 & 30 crossover signals for NIFTY 100/200 equities with real-time intraday tick integration and fundamental double confirmation.
+              NSE Semi-Algo Scanner with SMA 6 & 30 Crossover detection and AI Swing Trading v4.0, powered by <strong>Yahoo Finance</strong>.
             </p>
 
-            {errorMessage && (
+            {loginError && (
               <div className="alert-box alert-danger" style={{ width: '100%' }}>
                 <AlertCircle size={18} />
-                <span>{errorMessage}</span>
+                <span>{loginError}</span>
               </div>
             )}
 
-            {/* Authentication Method Tabs */}
-            <div className="auth-method-tabs">
-              <button
-                className={`auth-tab-btn ${authTab === 'token' ? 'active' : ''}`}
-                onClick={() => setAuthTab('token')}
-              >
-                <Key size={15} />
-                <span>Paste Daily Access Token</span>
-              </button>
-              <button
-                className={`auth-tab-btn ${authTab === 'oauth' ? 'active' : ''}`}
-                onClick={() => setAuthTab('oauth')}
-              >
-                <Shield size={15} />
-                <span>OAuth 2.0 Dialog</span>
-              </button>
-            </div>
-
-            {/* Method 1: Direct Token Input */}
-            {authTab === 'token' && (
-              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <div className="token-input-container">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-                    <span>PASTE UPSTOX ACCESS TOKEN</span>
-                    <a
-                      href="https://developer.upstox.com/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ color: 'var(--accent-cyan)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      <span>Upstox Developer Portal</span>
-                      <ExternalLink size={12} />
-                    </a>
-                  </div>
-                  <div className="token-input-wrapper">
-                    <input
-                      id="input-access-token"
-                      type={showToken ? 'text' : 'password'}
-                      className="token-input"
-                      placeholder="Paste token (e.g. eyJhbGciOi...)"
-                      value={directToken}
-                      onChange={(e) => setDirectToken(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleConnectWithToken()}
-                    />
-                    <button
-                      type="button"
-                      className="token-visibility-btn"
-                      onClick={() => setShowToken(!showToken)}
-                      title={showToken ? 'Hide token' : 'Show token'}
-                    >
-                      {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-                  <span style={{ fontSize: '0.72rem', color: 'var(--text-faint)' }}>
-                    Verified instantly against Upstox profile endpoint and encrypted for the current session.
-                  </span>
+            <form onSubmit={handleLogin} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '6px' }}>
+              <div className="token-input-container">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                  <User size={13} style={{ color: 'var(--accent-cyan)' }} />
+                  <span>USERNAME</span>
                 </div>
-
-                <button
-                  id="btn-connect-token"
-                  className="btn btn-primary"
-                  style={{ width: '100%', padding: '12px', fontSize: '0.92rem' }}
-                  onClick={() => handleConnectWithToken()}
-                  disabled={isSubmittingToken || !directToken.trim()}
-                >
-                  {isSubmittingToken ? (
-                    <>
-                      <RotateCw className="animate-spin" size={16} />
-                      <span>Verifying with Upstox API...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Connect Terminal Session</span>
-                      <ChevronRight size={18} />
-                    </>
-                  )}
-                </button>
+                <div className="token-input-wrapper">
+                  <input
+                    id="input-username"
+                    type="text"
+                    className="token-input"
+                    placeholder="Enter username (suriyaprakash)"
+                    value={loginUsername}
+                    onChange={(e) => {
+                      setLoginUsername(e.target.value)
+                      setLoginError(null)
+                    }}
+                    autoComplete="username"
+                  />
+                </div>
               </div>
-            )}
 
-            {/* Method 2: OAuth 2.0 Flow */}
-            {authTab === 'oauth' && (
-              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '6px' }}>
-                {!authStatus.configured && (
-                  <div className="alert-box alert-warning" style={{ width: '100%' }}>
-                    <AlertCircle size={18} />
-                    <span>Client ID/Secret not set in environment. Use the <strong>Paste Access Token</strong> tab.</span>
-                  </div>
-                )}
-                <button
-                  id="btn-connect-upstox"
-                  className="btn btn-primary"
-                  style={{ width: '100%', padding: '12px', fontSize: '0.92rem' }}
-                  onClick={handleConnectUpstoxOAuth}
-                  disabled={!authStatus.configured}
-                >
-                  <span>Authorize via Upstox SSO</span>
-                  <ChevronRight size={18} />
-                </button>
+              <div className="token-input-container">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                  <Lock size={13} style={{ color: 'var(--accent-cyan)' }} />
+                  <span>PASSWORD</span>
+                </div>
+                <div className="token-input-wrapper">
+                  <input
+                    id="input-password"
+                    type={showPassword ? 'text' : 'password'}
+                    className="token-input"
+                    placeholder="Enter password (master730)"
+                    value={loginPassword}
+                    onChange={(e) => {
+                      setLoginPassword(e.target.value)
+                      setLoginError(null)
+                    }}
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    className="token-visibility-btn"
+                    onClick={() => setShowPassword(!showPassword)}
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
-            )}
 
-            {/* Quick Preview / Demo Mode */}
-            <div style={{ width: '100%', marginTop: '4px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '8px 0', gap: '8px' }}>
-                <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-glass-card)' }} />
-                <span style={{ fontSize: '0.70rem', color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>or instant preview</span>
-                <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-glass-card)' }} />
-              </div>
               <button
-                id="btn-demo-mode"
-                type="button"
-                className="btn btn-secondary"
-                style={{
-                  width: '100%',
-                  padding: '11px',
-                  fontSize: '0.86rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                  background: 'var(--bg-surface-card)',
-                  border: '1px solid var(--border-glass-card)'
-                }}
-                onClick={handleEnterDemoMode}
+                id="btn-login-submit"
+                type="submit"
+                className="btn btn-primary"
+                style={{ width: '100%', padding: '12px', fontSize: '0.92rem', marginTop: '4px' }}
+                disabled={isLoggingIn || !loginUsername.trim() || !loginPassword.trim()}
               >
-                <Sparkles size={16} style={{ color: 'var(--accent-cyan)' }} />
-                <span>Launch in Glassmorphic Demo Mode</span>
+                {isLoggingIn ? (
+                  <>
+                    <RotateCw className="animate-spin" size={16} />
+                    <span>Authenticating Access...</span>
+                  </>
+                ) : (
+                  <>
+                    <Shield size={16} />
+                    <span>Sign In to Terminal</span>
+                    <ChevronRight size={18} />
+                  </>
+                )}
               </button>
-            </div>
+            </form>
 
             <div className="feature-list">
               <div className="feature-item">
                 <CheckCircle2 size={15} color="var(--bullish-text)" />
-                <span>Confirmed SMA 6 & 30 Signals</span>
+                <span>Confirmed SMA 6 & 30 Cross</span>
               </div>
               <div className="feature-item">
                 <CheckCircle2 size={15} color="var(--bullish-text)" />
-                <span>Double Confirmation Engine</span>
+                <span>Zero Upstox Dependency (yfinance)</span>
               </div>
               <div className="feature-item">
                 <CheckCircle2 size={15} color="var(--bullish-text)" />
@@ -809,16 +892,17 @@ export default function App() {
               </div>
               <div className="feature-item">
                 <CheckCircle2 size={15} color="var(--bullish-text)" />
-                <span>Spread & Volume Analytics</span>
+                <span>AI Swing Signals v4.0</span>
               </div>
             </div>
 
             <div style={{ fontSize: '0.74rem', color: 'var(--text-faint)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Shield size={13} />
-              <span>Strictly analytical semi-algo decision support. No automated execution orders placed.</span>
+              <span>Institutional semi-algo quantitative terminal for NSE equities.</span>
             </div>
           </div>
         </main>
+        {renderServerModal()}
       </div>
     )
   }
@@ -856,6 +940,25 @@ export default function App() {
 
         {/* Header Actions */}
         <div className="header-actions">
+          {/* Backend API Server Configuration */}
+          <button
+            id="btn-main-server-config"
+            className="btn btn-secondary"
+            onClick={() => {
+              setServerUrlInput(apiBase || '')
+              setServerTestStatus(null)
+              setServerTestError(null)
+              setShowServerModal(true)
+            }}
+            title="Configure Backend API Server URL"
+            style={{ padding: '7px 12px', fontSize: '0.78rem', gap: '6px' }}
+          >
+            <Server size={14} style={{ color: backendOffline ? 'var(--bearish-neon)' : 'var(--bullish-neon)' }} />
+            <span style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {apiBase ? apiBase.replace(/^https?:\/\//, '') : 'Server API'}
+            </span>
+          </button>
+
           {/* Black (Dark) vs White (Light) Glass Theme Toggle */}
           <button
             id="btn-theme-toggle"
@@ -880,7 +983,7 @@ export default function App() {
           {/* Connection Status Badge */}
           <div className="gateway-status-pill">
             <span className="pulse-beacon" style={{ backgroundColor: 'var(--bullish-neon)' }} />
-            <span style={{ color: 'var(--bullish-text)', fontWeight: 600 }}>Upstox Connected</span>
+            <span style={{ color: 'var(--bullish-text)', fontWeight: 600 }}>Active Terminal</span>
             {authStatus.user_name && (
               <span style={{ color: 'var(--text-muted)', borderLeft: '1px solid var(--border-subtle)', paddingLeft: '8px' }}>
                 {authStatus.user_name}
@@ -888,33 +991,55 @@ export default function App() {
             )}
           </div>
 
-          {/* Quick Update Token Button */}
-          <button
-            id="btn-update-token"
-            className="btn btn-secondary"
-            onClick={() => setShowUpdateModal(true)}
-            title="Update daily Upstox access token"
-            style={{ padding: '7px 12px', fontSize: '0.78rem' }}
-          >
-            <Key size={14} style={{ color: 'var(--accent-cyan)' }} />
-            <span>Update Token</span>
-          </button>
-
           {/* Logout Button */}
           <button
             id="btn-logout"
             className="btn btn-danger"
             onClick={handleLogout}
-            title="Disconnect Upstox session"
+            title="Sign out of terminal session"
             style={{ padding: '7px 12px', fontSize: '0.78rem' }}
           >
             <LogOut size={14} />
-            <span>Disconnect</span>
+            <span>Sign Out</span>
           </button>
         </div>
       </header>
 
-      {/* Triple App Workflow Mode Navigation */}
+      {backendOffline && (
+        <div style={{
+          margin: '12px 20px 0',
+          padding: '10px 16px',
+          borderRadius: 'var(--radius-md)',
+          backgroundColor: 'var(--bearish-bg)',
+          border: '1px solid var(--bearish-border)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+          flexWrap: 'wrap'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.8rem', color: 'var(--bearish-text)' }}>
+            <WifiOff size={18} style={{ flexShrink: 0 }} />
+            <div>
+              <strong>Backend Disconnected:</strong> Cannot connect to FastAPI backend at <code>{apiBase || 'current host'}</code>.
+            </div>
+          </div>
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              setServerUrlInput(apiBase || '')
+              setServerTestStatus(null)
+              setServerTestError(null)
+              setShowServerModal(true)
+            }}
+            style={{ padding: '5px 12px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+          >
+            Configure Server URL
+          </button>
+        </div>
+      )}
+
+      {/* App Workflow Mode Navigation */}
       <nav className="app-mode-nav">
         <button
           className={`app-mode-btn ${activeApp === 'scanner' ? 'active' : ''}`}
@@ -925,31 +1050,11 @@ export default function App() {
           <span className="app-mode-badge bullish">{results.length} Signals</span>
         </button>
         <button
-          className={`app-mode-btn ${activeApp === 'screener' ? 'active' : ''}`}
-          onClick={() => setActiveApp('screener')}
-        >
-          <Microscope size={16} />
-          <span>2️⃣ Stock Screener Analysis</span>
-          <span className="app-mode-badge cyan">Fundamentals</span>
-        </button>
-        <button
-          className={`app-mode-btn ${activeApp === 'scorer' ? 'active' : ''}`}
-          onClick={() => {
-            setActiveApp('scorer')
-            if (!scorerData) loadStockPerfection(scorerSymbol)
-            if (!leaderboard.length) loadLeaderboard()
-          }}
-        >
-          <Award size={16} />
-          <span>3️⃣ Stock Perfection Score</span>
-          <span className="app-mode-badge gold">100-Pt Quant Engine</span>
-        </button>
-        <button
           className={`app-mode-btn ${activeApp === 'algo_signals' ? 'active' : ''}`}
           onClick={() => setActiveApp('algo_signals')}
         >
           <Zap size={16} />
-          <span>4️⃣ Algo Signals</span>
+          <span>2️⃣ Algo Signals</span>
           <span className="app-mode-badge gold">AI Swing v4.0</span>
         </button>
       </nav>
@@ -1418,22 +1523,8 @@ export default function App() {
                               </a>
                               <button
                                 className="action-icon-btn"
-                                onClick={() => navigateToAnalysis(item.Symbol)}
-                                title="Deep Fundamental & Double Confirmation Analysis (Step 2)"
-                              >
-                                <Microscope size={13} style={{ color: 'var(--accent-cyan)' }} />
-                              </button>
-                              <button
-                                className="action-icon-btn"
-                                onClick={() => navigateToPerfection(item.Symbol)}
-                                title="Inspect 100-Point Stock Perfection Score (Step 3)"
-                              >
-                                <Award size={13} style={{ color: '#fbbf24' }} />
-                              </button>
-                              <button
-                                className="action-icon-btn"
                                 onClick={() => navigateToAlgoSignals(item.Symbol)}
-                                title="AI Swing Trading System v4.0 (Step 4)"
+                                title="AI Swing Trading System v4.0"
                               >
                                 <Zap size={13} style={{ color: 'var(--bullish-neon)' }} />
                               </button>
@@ -1450,784 +1541,9 @@ export default function App() {
         </>
       )}
 
-      {/* ========================================================================= */}
-      {/* APP 2: SCREENER FUNDAMENTAL & DOUBLE CONFIRMATION ANALYZER                */}
-      {/* ========================================================================= */}
-      {activeApp === 'screener' && (
-        <section style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-          {/* Search Header Bar */}
-          <div className="glass-panel" style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-              <div>
-                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.35rem', fontWeight: 800, margin: 0, color: '#ffffff' }}>
-                  Stock Quality & Double Confirmation Analyzer
-                </h2>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Screener-style Strengths, Weaknesses, EPS, P/E, Debt leverage & Technical Crossover Synthesis
-                </div>
-              </div>
-
-              {/* Symbol Search Form */}
-              <form
-                onSubmit={(e) => { e.preventDefault(); loadStockAnalysis(screenerInput); }}
-                style={{ display: 'flex', gap: '8px', minWidth: '320px', flex: 1, maxWidth: '460px' }}
-              >
-                <div className="search-box" style={{ flex: 1, maxWidth: 'none' }}>
-                  <Search className="search-icon" size={16} />
-                  <input
-                    type="text"
-                    className="search-input"
-                    placeholder="Enter NSE symbol (e.g. RELIANCE, TCS, INFY)..."
-                    value={screenerInput}
-                    onChange={(e) => setScreenerInput(e.target.value.toUpperCase())}
-                  />
-                </div>
-                <button type="submit" className="btn btn-primary" style={{ padding: '8px 16px', fontSize: '0.82rem' }} disabled={isAnalyzing}>
-                  {isAnalyzing ? <RotateCw className="animate-spin" size={15} /> : <span>Analyze</span>}
-                </button>
-              </form>
-            </div>
-
-            {/* Quick Click Chips */}
-            <div className="quick-chips-strip">
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 600 }}>Quick Stocks:</span>
-              {POPULAR_STOCKS.map((sym) => (
-                <button
-                  key={sym}
-                  className={`quick-chip ${screenerSymbol === sym ? 'active' : ''}`}
-                  onClick={() => loadStockAnalysis(sym)}
-                >
-                  {sym}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {screenerError && (
-            <div className="alert-box alert-danger">
-              <AlertCircle size={18} />
-              <span>{screenerError}</span>
-            </div>
-          )}
-
-          {isAnalyzing && (
-            <div className="glass-panel" style={{ padding: '60px 20px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
-              <RotateCw className="animate-spin" size={32} style={{ color: 'var(--accent-cyan)' }} />
-              <div style={{ fontWeight: 700, fontSize: '1rem', color: '#ffffff' }}>Analyzing {screenerSymbol} Fundamentals & Cross Status...</div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', maxWidth: '480px' }}>
-                Fetching balance sheet metrics, EPS trajectory, valuation ratios, and corroborating with SMA 6 & 30 trend direction.
-              </div>
-            </div>
-          )}
-
-          {/* Analysis Content */}
-          {!isAnalyzing && screenerData && (
-            <>
-              {/* Double Confirmation Verdict Card */}
-              {(() => {
-                const dc = screenerData.double_confirmation
-                let heroClass = 'neutral'
-                if (dc.signal === 'STRONG_BUY' || dc.signal === 'CAUTION_BUY') heroClass = 'bullish'
-                else if (dc.signal === 'STRONG_SELL' || dc.signal === 'AVOID') heroClass = 'bearish'
-
-                return (
-                  <div className={`verdict-banner ${heroClass} glass-panel`}>
-                    <div style={{ flex: 1, minWidth: '280px' }}>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-                        DOUBLE CONFIRMATION SYNTHESIS VERDICT
-                      </div>
-                      <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.9rem', margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span>{screenerData.company}</span>
-                        <span className="font-mono" style={{ fontSize: '0.95rem', color: 'var(--accent-cyan)', fontWeight: 700 }}>({screenerData.symbol})</span>
-                      </h1>
-                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        {screenerData.sector} • {screenerData.industry}
-                      </div>
-                    </div>
-
-                    {/* Recommendation Badge */}
-                    <div className="verdict-score-badge" style={{ background: dc.color, color: '#051424', borderColor: dc.color }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <Sparkles size={20} />
-                        <span>{dc.badge_text}</span>
-                      </div>
-                    </div>
-
-                    {/* Technical vs Fundamental Comparison Pillar */}
-                    <div style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', background: 'rgba(5, 14, 26, 0.6)', padding: '14px 18px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
-                      <div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>1st Confirmation: Technical</div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px' }}>
-                          <span className={`signal-pill ${screenerData.technical_signal === 'BULLISH' ? 'bullish' : 'bearish'}`}>
-                            {screenerData.technical_signal === 'BULLISH' ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-                            <span>SMA 6 & 30: {screenerData.technical_signal}</span>
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>2nd Confirmation: Fundamental</div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px' }}>
-                          <span className="font-mono" style={{ fontSize: '1.05rem', fontWeight: 800, color: screenerData.verdict_color === 'bullish' ? 'var(--bullish-text)' : 'var(--bearish-text)' }}>
-                            {screenerData.fundamental_score} / 10 • {screenerData.fundamental_verdict}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>Current Market Price</div>
-                        <div className="font-mono" style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff', marginTop: '4px' }}>
-                          ₹{screenerData.current_price?.toFixed(2)}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>3rd Confirmation: Perfection Score</div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
-                          <span className="font-mono" style={{ fontSize: '1.1rem', fontWeight: 800, color: '#fbbf24' }}>
-                            {screenerData.perfection_score || 0} / 100
-                          </span>
-                          <button
-                            className="btn btn-secondary"
-                            onClick={() => navigateToPerfection(screenerData.symbol)}
-                            style={{ padding: '3px 8px', fontSize: '0.72rem', gap: '4px' }}
-                            title="Inspect 100-Point Stock Perfection Breakdown"
-                          >
-                            <Award size={12} color="#fbbf24" />
-                            <span>Scorecard</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Synthesis explanation */}
-                    <div style={{ width: '100%', fontSize: '0.86rem', color: 'var(--text-sub)', lineHeight: 1.5, background: 'rgba(255,255,255,0.03)', padding: '12px 16px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-                      <strong style={{ color: '#ffffff' }}>Quant Strategy Synthesis:</strong> {dc.summary}
-                    </div>
-                  </div>
-                )
-              })()}
-
-              {/* Fundamental Bento Grid */}
-              <div className="glass-panel" style={{ padding: '18px 20px' }}>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '12px' }}>
-                  KEY FINANCIAL METRICS (SCREENER OVERVIEW)
-                </div>
-                <div className="fundamental-grid">
-                  <div className="fundamental-card">
-                    <span className="fundamental-label">Market Cap</span>
-                    <span className="fundamental-val">₹{screenerData.market_cap_cr ? screenerData.market_cap_cr.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'} Cr</span>
-                  </div>
-
-                  <div className="fundamental-card">
-                    <span className="fundamental-label">Stock P/E</span>
-                    <span className="fundamental-val">{screenerData.trailing_pe ? screenerData.trailing_pe.toFixed(2) : '—'}x</span>
-                  </div>
-
-                  <div className="fundamental-card">
-                    <span className="fundamental-label">Price to Book (P/B)</span>
-                    <span className="fundamental-val">{screenerData.price_to_book ? screenerData.price_to_book.toFixed(2) : '—'}x</span>
-                  </div>
-
-                  <div className="fundamental-card">
-                    <span className="fundamental-label">Return on Equity (ROE)</span>
-                    <span className="fundamental-val" style={{ color: (screenerData.roe || 0) > 15 ? 'var(--bullish-text)' : '#ffffff' }}>
-                      {screenerData.roe ? (screenerData.roe * 100).toFixed(2) + '%' : '—'}
-                    </span>
-                  </div>
-
-                  <div className="fundamental-card">
-                    <span className="fundamental-label">Trailing EPS</span>
-                    <span className="fundamental-val">₹{screenerData.eps ? screenerData.eps.toFixed(2) : '—'}</span>
-                  </div>
-
-                  <div className="fundamental-card">
-                    <span className="fundamental-label">Debt to Equity</span>
-                    <span className="fundamental-val" style={{ color: (screenerData.debt_to_equity || 0) < 0.5 ? 'var(--bullish-text)' : '#ffffff' }}>
-                      {screenerData.debt_to_equity ? screenerData.debt_to_equity.toFixed(2) : '—'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Pros vs Cons Split */}
-              <div className="pros-cons-grid">
-                {/* Pros Panel */}
-                <div className="pros-panel glass-panel">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--bullish-text)', fontWeight: 700, fontSize: '0.88rem' }}>
-                    <CheckCircle2 size={18} />
-                    <span>Company Strengths & Pros ({screenerData.pros?.length || 0})</span>
-                  </div>
-                  <div className="pros-cons-list">
-                    {screenerData.pros && screenerData.pros.length > 0 ? (
-                      screenerData.pros.map((p, idx) => (
-                        <div key={idx} className="pros-cons-item">
-                          <Check size={15} style={{ color: 'var(--bullish-text)', flexShrink: 0, marginTop: '2px' }} />
-                          <span>{p}</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-faint)' }}>No standout positive qualitative factors identified.</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Cons Panel */}
-                <div className="cons-panel glass-panel">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--bearish-text)', fontWeight: 700, fontSize: '0.88rem' }}>
-                    <AlertTriangle size={18} />
-                    <span>Company Limitations & Cons ({screenerData.cons?.length || 0})</span>
-                  </div>
-                  <div className="pros-cons-list">
-                    {screenerData.cons && screenerData.cons.length > 0 ? (
-                      screenerData.cons.map((c, idx) => (
-                        <div key={idx} className="pros-cons-item">
-                          <X size={15} style={{ color: 'var(--bearish-text)', flexShrink: 0, marginTop: '2px' }} />
-                          <span>{c}</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-faint)' }}>No major red flags or balance sheet warnings identified.</div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </section>
-      )}
 
       {/* ========================================================================= */}
-      {/* APP 3: 100-POINT STOCK PERFECTION SCORE ENGINE                           */}
-      {/* ========================================================================= */}
-      {activeApp === 'scorer' && (
-        <section className="perfection-engine-wrap">
-          {/* Search Header Bar */}
-          <div className="glass-panel" style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-              <div>
-                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.35rem', fontWeight: 800, margin: 0, color: '#ffffff', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Award size={22} style={{ color: '#fbbf24' }} />
-                  <span>Stock Perfection Scoring Engine</span>
-                  <span className="app-mode-badge gold">100-Point Quant Algorithm</span>
-                </h2>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                  Multi-factor quantitative audit: Technical SMA Momentum (25 pts), Balance Sheet Solvency (25 pts), ROE Quality (25 pts), Valuation & EPS Growth (25 pts)
-                </div>
-              </div>
-
-              {/* Symbol Search Form */}
-              <form
-                onSubmit={(e) => { e.preventDefault(); loadStockPerfection(scorerInput); }}
-                style={{ display: 'flex', gap: '8px', minWidth: '320px', flex: 1, maxWidth: '460px' }}
-              >
-                <div className="search-box" style={{ flex: 1, maxWidth: 'none' }}>
-                  <Search className="search-icon" size={16} />
-                  <input
-                    type="text"
-                    className="search-input"
-                    placeholder="Search stock to score (e.g. RELIANCE, TCS)..."
-                    value={scorerInput}
-                    onChange={(e) => setScorerInput(e.target.value.toUpperCase())}
-                  />
-                </div>
-                <button type="submit" className="btn btn-primary" style={{ padding: '8px 16px', fontSize: '0.82rem' }} disabled={isScoring}>
-                  {isScoring ? <RotateCw className="animate-spin" size={15} /> : <span>Score Stock</span>}
-                </button>
-              </form>
-            </div>
-
-            {/* Quick Click Chips */}
-            <div className="quick-chips-strip">
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 600 }}>Quick Stocks:</span>
-              {POPULAR_STOCKS.map((sym) => (
-                <button
-                  key={sym}
-                  className={`quick-chip ${scorerSymbol === sym ? 'active' : ''}`}
-                  onClick={() => loadStockPerfection(sym)}
-                >
-                  {sym}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {scorerError && (
-            <div className="alert-box alert-danger">
-              <AlertCircle size={18} />
-              <span>{scorerError}</span>
-            </div>
-          )}
-
-          {isScoring && (
-            <div className="glass-panel" style={{ padding: '60px 20px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
-              <RotateCw className="animate-spin" size={32} style={{ color: '#fbbf24' }} />
-              <div style={{ fontWeight: 700, fontSize: '1rem', color: '#ffffff' }}>Computing 100-Point Perfection Score for {scorerSymbol}...</div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', maxWidth: '480px' }}>
-                Auditing 8-point criteria: SMA 6&30 golden cross, D/E leverage, capital efficiency (ROE), operating margins, valuation multiple, and EPS trajectory.
-              </div>
-            </div>
-          )}
-
-          {/* Scorer Content */}
-          {!isScoring && scorerData && (() => {
-            const perf = scorerData.perfection_details || {}
-            const totalScore = perf.total_score ?? scorerData.perfection_score ?? 0
-            const pillars = perf.pillars || {}
-            const checklist = perf.checklist || []
-            const passedCount = perf.passed_criteria_count ?? 0
-            const totalCount = perf.total_criteria_count ?? checklist.length ?? 8
-            const grade = perf.grade || scorerData.perfection_grade || 'B'
-            const badgeText = perf.badge_text || 'EVALUATED'
-            const isBullish = scorerData.technical_signal === 'BULLISH'
-
-            // Radial gauge math (circumference = 2 * PI * r; with r=50 => 314.16)
-            const radius = 50
-            const circumference = 2 * Math.PI * radius
-            const strokeDashoffset = circumference - (circumference * totalScore) / 100
-
-            // Color palette according to score
-            let gaugeColor = 'var(--bearish-neon)'
-            if (totalScore >= 80) gaugeColor = 'var(--bullish-neon)'
-            else if (totalScore >= 65) gaugeColor = 'var(--accent-cyan)'
-            else if (totalScore >= 50) gaugeColor = '#fbbf24'
-
-            return (
-              <>
-                {/* Hero Showcase Card */}
-                <div className="perfection-hero-card">
-                  <div className="specular-edge" />
-                  <div className="perfection-hero-top">
-                    {/* Stock Identity */}
-                    <div className="perfection-stock-identity">
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span className="font-mono" style={{ fontSize: '0.74rem', color: 'var(--accent-cyan)', fontWeight: 700, letterSpacing: '0.08em' }}>
-                          STEP 3 QUANT AUDIT
-                        </span>
-                        <span style={{ color: 'var(--border-medium)' }}>•</span>
-                        <span className={`signal-pill ${isBullish ? 'bullish' : 'bearish'}`} style={{ padding: '2px 8px', fontSize: '0.7rem' }}>
-                          {isBullish ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                          <span>SMA: {scorerData.technical_signal}</span>
-                        </span>
-                        <span style={{ color: 'var(--border-medium)' }}>•</span>
-                        <span className="font-mono" style={{ fontSize: '0.7rem', color: totalScore >= 75 ? 'var(--bullish-text)' : 'var(--text-muted)' }}>
-                          {totalScore >= 80 ? '★ TOP 3.2% NSE' : totalScore >= 65 ? 'TOP DECILE' : 'BROAD MARKET'}
-                        </span>
-                      </div>
-                      <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '2rem', margin: '4px 0 0', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span>{scorerData.company}</span>
-                        <span className="font-mono" style={{ fontSize: '1rem', color: 'var(--accent-cyan)' }}>({scorerData.symbol})</span>
-                      </h1>
-                      <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)' }}>
-                        {scorerData.sector} • {scorerData.industry} • LTP: <strong className="font-mono" style={{ color: 'var(--text-main)' }}>₹{scorerData.current_price?.toFixed(2)}</strong>
-                      </div>
-                      <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
-                        <button
-                          className="btn btn-secondary"
-                          style={{ padding: '6px 12px', fontSize: '0.78rem' }}
-                          onClick={() => navigateToAnalysis(scorerData.symbol)}
-                        >
-                          <Microscope size={13} />
-                          <span>View Screener Fundamentals</span>
-                        </button>
-                        <a
-                          className="btn btn-secondary"
-                          href={`https://in.tradingview.com/chart/?symbol=NSE:${encodeURIComponent(scorerData.symbol)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ padding: '6px 12px', fontSize: '0.78rem' }}
-                        >
-                          <ExternalLink size={13} />
-                          <span>Chart</span>
-                        </a>
-                      </div>
-                    </div>
-
-                    {/* Radial Score Meter & Verdict */}
-                    <div className="perfection-score-showcase">
-                      <div className="radial-score-gauge">
-                        <svg className="radial-score-svg" viewBox="0 0 120 120">
-                          <defs>
-                            <linearGradient id="score-arc-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-                              <stop offset="0%" stopColor="var(--accent-cyan)" />
-                              <stop offset="100%" stopColor={gaugeColor} />
-                            </linearGradient>
-                          </defs>
-                          <circle
-                            className="radial-score-circle-bg"
-                            cx="60"
-                            cy="60"
-                            r={radius}
-                          />
-                          <circle
-                            className="radial-score-circle-val"
-                            cx="60"
-                            cy="60"
-                            r={radius}
-                            stroke="url(#score-arc-grad)"
-                            strokeDasharray={circumference}
-                            strokeDashoffset={strokeDashoffset}
-                            style={{ filter: `drop-shadow(0 0 10px ${gaugeColor}70)` }}
-                          />
-                        </svg>
-                        <div className="radial-score-content">
-                          <span className="radial-score-number">{totalScore}</span>
-                          <span className="radial-score-max">/ 100 PTS</span>
-                        </div>
-                      </div>
-
-                      <div className="score-badge-block">
-                        <div
-                          className="score-grade-tag"
-                          style={{
-                            background: `${gaugeColor}15`,
-                            color: gaugeColor,
-                            border: `1px solid ${gaugeColor}40`
-                          }}
-                        >
-                          <Award size={14} />
-                          <span>GRADE: {grade}</span>
-                        </div>
-                        <h3 className="score-verdict-title">{badgeText}</h3>
-                        <div className="score-criteria-chip">
-                          <CheckCircle2 size={13} color="var(--bullish-text)" />
-                          <span><strong>{passedCount} of {totalCount}</strong> Perfection Criteria Satisfied</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Quant Summary Box */}
-                  <div style={{ background: 'rgba(5, 14, 26, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)', padding: '14px 18px', fontSize: '0.86rem', color: 'var(--text-sub)', lineHeight: 1.5 }}>
-                    <strong style={{ color: '#ffffff' }}>Perfection Assessment: </strong>
-                    {perf.rating_description || "Comprehensive quantitative rating synthesizing technical breakout timing with underlying corporate health."}
-                  </div>
-                </div>
-
-                {/* 4 Pillars Breakdown Grid */}
-                <div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Layers size={14} />
-                    <span>4-PILLAR QUANTITATIVE BREAKDOWN (25 PTS EACH)</span>
-                  </div>
-
-                  <div className="pillars-grid">
-                    {/* Pillar 1: Technical & Momentum */}
-                    {(() => {
-                      const p = pillars.technical || { score: 0, max: 25, percentage: 0, details: [] }
-                      return (
-                        <div className="pillar-card">
-                          <div className="pillar-header">
-                            <div className="pillar-title-wrap">
-                              <TrendingUp size={16} color="var(--bullish-text)" />
-                              <span className="pillar-title">Technical Momentum</span>
-                            </div>
-                            <span className="pillar-score-badge font-mono">{p.score} / 25</span>
-                          </div>
-                          <div className="pillar-bar-track">
-                            <div className="pillar-bar-fill" style={{ width: `${p.percentage}%`, background: 'var(--bullish-neon)' }} />
-                          </div>
-                          <div className="pillar-details-list">
-                            {p.details && p.details.map((d, i) => (
-                              <div key={i} className="pillar-detail-bullet">
-                                <span style={{ color: 'var(--bullish-text)' }}>•</span>
-                                <span>{d}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })()}
-
-                    {/* Pillar 2: Balance Sheet & Solvency */}
-                    {(() => {
-                      const p = pillars.financial_health || { score: 0, max: 25, percentage: 0, details: [] }
-                      return (
-                        <div className="pillar-card">
-                          <div className="pillar-header">
-                            <div className="pillar-title-wrap">
-                              <Shield size={16} color="var(--accent-cyan)" />
-                              <span className="pillar-title">Balance Sheet Solvency</span>
-                            </div>
-                            <span className="pillar-score-badge font-mono">{p.score} / 25</span>
-                          </div>
-                          <div className="pillar-bar-track">
-                            <div className="pillar-bar-fill" style={{ width: `${p.percentage}%`, background: 'var(--accent-cyan)' }} />
-                          </div>
-                          <div className="pillar-details-list">
-                            {p.details && p.details.map((d, i) => (
-                              <div key={i} className="pillar-detail-bullet">
-                                <span style={{ color: 'var(--accent-cyan)' }}>•</span>
-                                <span>{d}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })()}
-
-                    {/* Pillar 3: Profitability & ROE */}
-                    {(() => {
-                      const p = pillars.profitability || { score: 0, max: 25, percentage: 0, details: [] }
-                      return (
-                        <div className="pillar-card">
-                          <div className="pillar-header">
-                            <div className="pillar-title-wrap">
-                              <BarChart3 size={16} color="#fbbf24" />
-                              <span className="pillar-title">ROE & Profit Margins</span>
-                            </div>
-                            <span className="pillar-score-badge font-mono">{p.score} / 25</span>
-                          </div>
-                          <div className="pillar-bar-track">
-                            <div className="pillar-bar-fill" style={{ width: `${p.percentage}%`, background: '#fbbf24' }} />
-                          </div>
-                          <div className="pillar-details-list">
-                            {p.details && p.details.map((d, i) => (
-                              <div key={i} className="pillar-detail-bullet">
-                                <span style={{ color: '#fbbf24' }}>•</span>
-                                <span>{d}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })()}
-
-                    {/* Pillar 4: Valuation & EPS Growth */}
-                    {(() => {
-                      const p = pillars.valuation_growth || { score: 0, max: 25, percentage: 0, details: [] }
-                      return (
-                        <div className="pillar-card">
-                          <div className="pillar-header">
-                            <div className="pillar-title-wrap">
-                              <Sparkles size={16} color="#a855f7" />
-                              <span className="pillar-title">Valuation & Growth</span>
-                            </div>
-                            <span className="pillar-score-badge font-mono">{p.score} / 25</span>
-                          </div>
-                          <div className="pillar-bar-track">
-                            <div className="pillar-bar-fill" style={{ width: `${p.percentage}%`, background: '#a855f7' }} />
-                          </div>
-                          <div className="pillar-details-list">
-                            {p.details && p.details.map((d, i) => (
-                              <div key={i} className="pillar-detail-bullet">
-                                <span style={{ color: '#a855f7' }}>•</span>
-                                <span>{d}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })()}
-                  </div>
-                </div>
-
-                {/* 8-Point Perfection Checklist */}
-                <div className="glass-panel checklist-section-card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <CheckCircle2 size={14} color="var(--bullish-text)" />
-                      <span>8-POINT INSTITUTIONAL PERFECTION CHECKLIST</span>
-                    </div>
-                    <span className="font-mono" style={{ fontSize: '0.8rem', color: 'var(--bullish-text)', fontWeight: 700 }}>
-                      {passedCount} / {totalCount} Criteria Satisfied ({Math.round((passedCount / totalCount) * 100)}%)
-                    </span>
-                  </div>
-
-                  <div className="checklist-grid">
-                    {checklist.map((item) => (
-                      <div key={item.id} className={`checklist-item-card ${item.passed ? 'passed' : 'failed'}`}>
-                        <div className={`checklist-icon-box ${item.passed ? 'passed' : 'failed'}`}>
-                          {item.passed ? <Check size={16} /> : <X size={16} />}
-                        </div>
-                        <div className="checklist-content-wrap">
-                          <div className="checklist-content-header">
-                            <span className="checklist-item-title">{item.title}</span>
-                            <span className="checklist-tag">{item.badge}</span>
-                          </div>
-                          <div className="checklist-item-detail">{item.detail}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Market Perfection Leaderboard */}
-                <div className="table-surface-card glass-panel" style={{ marginTop: '4px' }}>
-                  <div className="table-header-strip" style={{ flexWrap: 'wrap', gap: '10px' }}>
-                    <div className="table-header-strip-title">
-                      <Award size={15} color="#fbbf24" />
-                      <span>MARKET PERFECTION LEADERBOARD</span>
-                      <span style={{ color: 'var(--border-medium)' }}>•</span>
-                      <span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>RANKED BY 100-PT COMPOSITE SCORE</span>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      {/* Filter Pills */}
-                      <button
-                        className={`filter-pill ${leaderboardFilter === 'ALL' ? 'active' : ''}`}
-                        onClick={() => setLeaderboardFilter('ALL')}
-                        style={{ padding: '4px 10px', fontSize: '0.72rem' }}
-                      >
-                        All Candidates ({leaderboard.length})
-                      </button>
-                      <button
-                        className={`filter-pill ${leaderboardFilter === 'PERFECT' ? 'active bullish' : ''}`}
-                        onClick={() => setLeaderboardFilter('PERFECT')}
-                        style={{ padding: '4px 10px', fontSize: '0.72rem' }}
-                      >
-                        Top Quality (75+)
-                      </button>
-                      <button
-                        className={`filter-pill ${leaderboardFilter === 'BULLISH' ? 'active bullish' : ''}`}
-                        onClick={() => setLeaderboardFilter('BULLISH')}
-                        style={{ padding: '4px 10px', fontSize: '0.72rem' }}
-                      >
-                        Golden Cross Only
-                      </button>
-
-                      <button
-                        className="btn btn-secondary"
-                        onClick={loadLeaderboard}
-                        disabled={leaderboardLoading}
-                        style={{ padding: '4px 10px', fontSize: '0.72rem', gap: '4px' }}
-                        title="Recompute leaderboard"
-                      >
-                        <RotateCw className={leaderboardLoading ? 'animate-spin' : ''} size={12} />
-                        <span>Refresh</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="table-wrapper">
-                    <table className="scanner-table">
-                      <thead>
-                        <tr>
-                          <th style={{ width: '56px' }}>Rank</th>
-                          <th>Symbol & Company</th>
-                          <th style={{ textAlign: 'center' }}>Perfection Score</th>
-                          <th>Grade</th>
-                          <th>SMA 6 & 30</th>
-                          <th style={{ textAlign: 'right' }}>LTP (₹)</th>
-                          <th style={{ textAlign: 'right' }}>Stock P/E</th>
-                          <th style={{ textAlign: 'right' }}>ROE</th>
-                          <th style={{ textAlign: 'center' }}>Verdict</th>
-                          <th style={{ textAlign: 'right', width: '110px' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredLeaderboard.length === 0 ? (
-                          <tr>
-                            <td colSpan={10} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
-                              {leaderboardLoading ? (
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                                  <RotateCw className="animate-spin" size={16} color="var(--accent-cyan)" />
-                                  <span>Calculating Perfection Scores for Market Candidates...</span>
-                                </div>
-                              ) : (
-                                <span>No candidate stocks in leaderboard. Click "Refresh" or execute an SMA scan.</span>
-                              )}
-                            </td>
-                          </tr>
-                        ) : (
-                          filteredLeaderboard.map((item, idx) => {
-                            const isRowBullish = item.technical_signal === 'BULLISH'
-                            const scoreVal = item.perfection_score || 0
-                            let scoreBadgeColor = 'var(--bearish-neon)'
-                            if (scoreVal >= 80) scoreBadgeColor = 'var(--bullish-neon)'
-                            else if (scoreVal >= 65) scoreBadgeColor = 'var(--accent-cyan)'
-                            else if (scoreVal >= 50) scoreBadgeColor = '#fbbf24'
-
-                            return (
-                              <tr
-                                key={item.symbol}
-                                onClick={() => loadStockPerfection(item.symbol)}
-                                style={{ cursor: 'pointer' }}
-                                title="Click to inspect 100-Point Perfection Breakdown"
-                              >
-                                <td className="rank-badge">#{item.rank || idx + 1}</td>
-                                <td>
-                                  <div className="symbol-cell">
-                                    <span className="symbol-name">{item.symbol}</span>
-                                    <span className="exchange-chip">NSE</span>
-                                  </div>
-                                  <div className="company-subname">{item.company}</div>
-                                </td>
-                                <td style={{ textAlign: 'center' }}>
-                                  <span
-                                    className="leaderboard-score-pill"
-                                    style={{
-                                      background: `${scoreBadgeColor}15`,
-                                      color: scoreBadgeColor,
-                                      border: `1px solid ${scoreBadgeColor}35`
-                                    }}
-                                  >
-                                    <Award size={13} />
-                                    <span>{scoreVal} / 100</span>
-                                  </span>
-                                </td>
-                                <td>
-                                  <span className="font-mono" style={{ fontWeight: 700, fontSize: '0.8rem', color: '#ffffff' }}>
-                                    {item.perfection_grade || 'N/A'}
-                                  </span>
-                                </td>
-                                <td>
-                                  <span className={`signal-pill ${isRowBullish ? 'bullish' : 'bearish'}`}>
-                                    {isRowBullish ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                                    <span>{item.technical_signal || 'NONE'}</span>
-                                  </span>
-                                </td>
-                                <td className="font-mono" style={{ textAlign: 'right', fontWeight: 700, color: '#ffffff' }}>
-                                  ₹{item.current_price ? item.current_price.toFixed(2) : '—'}
-                                </td>
-                                <td className="font-mono" style={{ textAlign: 'right', color: 'var(--text-muted)' }}>
-                                  {item.pe ? `${item.pe.toFixed(1)}x` : '—'}
-                                </td>
-                                <td className="font-mono" style={{ textAlign: 'right', color: (item.roe || 0) > 0.14 ? 'var(--bullish-text)' : 'var(--text-sub)' }}>
-                                  {item.roe ? `${(item.roe * 100).toFixed(1)}%` : '—'}
-                                </td>
-                                <td style={{ textAlign: 'center' }}>
-                                  <span
-                                    style={{
-                                      fontSize: '0.72rem',
-                                      fontWeight: 700,
-                                      color: scoreBadgeColor,
-                                      fontFamily: 'var(--font-mono)'
-                                    }}
-                                  >
-                                    {item.perfection_details?.badge_text || 'EVALUATED'}
-                                  </span>
-                                </td>
-                                <td style={{ textAlign: 'right' }}>
-                                  <button
-                                    className="btn btn-secondary"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      loadStockPerfection(item.symbol)
-                                    }}
-                                    style={{ padding: '3px 8px', fontSize: '0.72rem', gap: '3px' }}
-                                    title="Inspect Perfection Score"
-                                  >
-                                    <Award size={12} color="#fbbf24" />
-                                    <span>Audit</span>
-                                  </button>
-                                </td>
-                              </tr>
-                            )
-                          })
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </>
-            )
-          })()}
-        </section>
-      )}
-
-      {/* ========================================================================= */}
-      {/* APP 4: ALGO SIGNALS (AI SWING TRADING SYSTEM v4.0)                        */}
+      {/* APP 2: ALGO SIGNALS (AI SWING TRADING SYSTEM v4.0)                        */}
       {/* ========================================================================= */}
       {activeApp === 'algo_signals' && (
         <AlgoSignals apiBase={API_BASE} initialSymbol={algoSymbol} />
@@ -2313,32 +1629,7 @@ export default function App() {
               <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
                 <button
                   className="btn btn-primary"
-                  style={{ flex: 1 }}
-                  onClick={() => {
-                    const sym = selectedStock.Symbol
-                    setSelectedStock(null)
-                    navigateToAnalysis(sym)
-                  }}
-                >
-                  <Microscope size={15} />
-                  <span>Screener Analysis (Step 2)</span>
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  style={{ gap: '6px' }}
-                  onClick={() => {
-                    const sym = selectedStock.Symbol
-                    setSelectedStock(null)
-                    navigateToPerfection(sym)
-                  }}
-                  title="Inspect Stock Perfection Score"
-                >
-                  <Award size={15} style={{ color: '#fbbf24' }} />
-                  <span>Perfection Score (Step 3)</span>
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  style={{ gap: '6px' }}
+                  style={{ flex: 1, gap: '8px' }}
                   onClick={() => {
                     const sym = selectedStock.Symbol
                     setSelectedStock(null)
@@ -2346,15 +1637,15 @@ export default function App() {
                   }}
                   title="Run AI Swing Trading Model v4.0"
                 >
-                  <Zap size={15} style={{ color: 'var(--bullish-neon)' }} />
-                  <span>AI Swing (Step 4)</span>
+                  <Zap size={16} style={{ color: 'var(--bullish-neon)' }} />
+                  <span>AI Swing Analysis</span>
                 </button>
                 <a
                   className="btn btn-secondary"
                   href={`https://in.tradingview.com/chart/?symbol=NSE:${encodeURIComponent(selectedStock.Symbol)}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ padding: '8px 14px' }}
+                  style={{ padding: '8px 14px', gap: '6px' }}
                 >
                   <ExternalLink size={15} />
                   <span>Chart</span>
@@ -2365,99 +1656,13 @@ export default function App() {
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* MODAL 2: UPDATE ACCESS TOKEN SLIDEOUT / DIALOG                            */}
-      {/* ========================================================================= */}
-      {showUpdateModal && (
-        <div className="modal-overlay" onClick={() => setShowUpdateModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div style={{ width: '28px', height: '28px', borderRadius: '4px', background: 'rgba(0, 210, 255, 0.1)', border: '1px solid rgba(0, 210, 255, 0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-cyan)' }}>
-                  <Key size={15} />
-                </div>
-                <span style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: '1.05rem', color: '#ffffff' }}>
-                  Update Upstox Access Token
-                </span>
-              </div>
-              <button className="modal-close-btn" onClick={() => setShowUpdateModal(false)}>
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="modal-body">
-              <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                Upstox market access tokens expire daily at 03:30 AM IST. Paste your fresh daily token to re-authenticate live market streams.
-              </div>
-
-              <div className="token-input-container">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-                  <span>NEW UPSTOX ACCESS TOKEN</span>
-                  <a
-                    href="https://developer.upstox.com/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: 'var(--accent-cyan)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '3px' }}
-                  >
-                    <span>Developer Portal</span>
-                    <ExternalLink size={11} />
-                  </a>
-                </div>
-                <div className="token-input-wrapper">
-                  <input
-                    type={showUpdateToken ? 'text' : 'password'}
-                    className="token-input"
-                    placeholder="Paste new Upstox access token..."
-                    value={updateTokenInput}
-                    onChange={(e) => setUpdateTokenInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleConnectWithToken(updateTokenInput)}
-                  />
-                  <button
-                    type="button"
-                    className="token-visibility-btn"
-                    onClick={() => setShowUpdateToken(!showUpdateToken)}
-                  >
-                    {showUpdateToken ? <EyeOff size={15} /> : <Eye size={15} />}
-                  </button>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => setShowUpdateModal(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => handleConnectWithToken(updateTokenInput)}
-                  disabled={isSubmittingToken || !updateTokenInput.trim()}
-                >
-                  {isSubmittingToken ? (
-                    <>
-                      <RotateCw className="animate-spin" size={14} />
-                      <span>Validating Token...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Validate & Update Session</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
+{/* ========================================================================= */}
       {/* SYSTEM TELEMETRY & ENGINE STATUS FOOTER                                   */}
       {/* ========================================================================= */}
       <footer className="system-footer">
         <div className="footer-left">
           <span className="pulse-beacon" style={{ backgroundColor: 'var(--bullish-neon)' }} />
-          <span>Upstox WebSocket V2 Protocol</span>
+          <span>NSE Quant Stream • yfinance Engine</span>
           <span style={{ color: 'var(--border-medium)' }}>•</span>
           <span style={{ color: 'var(--accent-cyan)' }}>Quant Engine Online</span>
         </div>
@@ -2465,6 +1670,7 @@ export default function App() {
           Scanner Algorithm: <span style={{ color: '#ffffff' }}>SMA 6 vs SMA 30 Dual Confirmed Cross (NSE Equities)</span>
         </div>
       </footer>
+      {renderServerModal()}
     </div>
   )
 }

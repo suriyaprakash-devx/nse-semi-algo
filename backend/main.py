@@ -21,45 +21,36 @@ from backend.auth import (
     get_active_access_token,
     OAuthSession
 )
-from backend.scanner import scanner_manager, HTTPException_401
-from backend.upstox_client import upstox_client_manager
+from backend.scanner import scanner_manager
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("upstox_scanner")
+logger = logging.getLogger("nse_sma_scanner")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize Database and background preload of instrument master
-    logger.info("Initializing Upstox Semi-Algo Scanner backend...")
+    # Startup: Initialize Database
+    logger.info("Initializing NSE Semi-Algo Scanner backend (yfinance engine)...")
     init_db()
-
-    # Pre-fetch instrument master asynchronously so initial scan has zero cold-start delay
-    asyncio.create_task(prewarm_instrument_cache())
     yield
     # Shutdown
-    logger.info("Shutting down Upstox Semi-Algo Scanner backend...")
-
-async def prewarm_instrument_cache():
-    try:
-        await asyncio.sleep(1)
-        logger.info("Pre-warming Upstox NSE instrument master...")
-        await upstox_client_manager.get_nse_instruments()
-    except Exception as e:
-        logger.warning(f"Background instrument preload warning: {e}")
+    logger.info("Shutting down NSE Semi-Algo Scanner backend...")
 
 app = FastAPI(
-    title="Upstox Semi-Algo NSE Scanner",
-    description="Semi-automated NSE NIFTY 100/200 Stock Scanner with SMA 6 & 30 Crossover Detection",
-    version="1.0.0",
+    title="NSE Semi-Algo Scanner",
+    description="Semi-automated NSE NIFTY 100/200 Stock Scanner with SMA 6 & 30 Crossover Detection (yfinance)",
+    version="2.5.0",
     lifespan=lifespan
 )
 
-# Configure CORS
+# Configure CORS (Web & Mobile Capacitor)
 origins = [origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",") if origin.strip()]
+for cap_origin in ["https://localhost", "capacitor://localhost", "http://localhost"]:
+    if cap_origin not in origins:
+        origins.append(cap_origin)
 if settings.FRONTEND_URL and settings.FRONTEND_URL not in origins:
     origins.append(settings.FRONTEND_URL)
 
@@ -91,9 +82,7 @@ async def trigger_scan(
     session: Optional[OAuthSession] = Depends(get_current_session_optional)
 ):
     """
-    Trigger the semi-algo scanner.
-    If an active Upstox session exists, uses Upstox API v2.
-    If no Upstox session exists, seamlessly runs via Real-Time Live Market Feed.
+    Trigger the semi-algo scanner powered by yfinance.
     Scans NIFTY 100 + 200 universe, calculates SMA 6 & 30 with current day candle,
     detects confirmed crossovers, ranks by crossover date, and stores results.
     """
@@ -107,20 +96,12 @@ async def trigger_scan(
             }
         )
 
-    # Get active decrypted access token if session is valid
-    access_token = None
-    if session:
-        try:
-            access_token = get_active_access_token(session)
-        except Exception:
-            access_token = None
-
-    # Launch scan task in background
-    asyncio.create_task(scanner_manager.run_scan(access_token=access_token))
+    # Launch scan task in background via yfinance
+    asyncio.create_task(scanner_manager.run_scan())
 
     return {
         "status": "started",
-        "message": f"Semi-algo scanner execution started ({'Upstox v2' if access_token else 'Live Market Feed'}).",
+        "message": "Semi-algo scanner execution started via Yahoo Finance (yfinance).",
         "progress": scanner_manager.progress_message
     }
 
@@ -198,35 +179,6 @@ def get_scanner_results(
         "results": results
     }
 
-@app.get("/api/analysis/{symbol}")
-def analyze_stock(symbol: str, db: Session = Depends(get_db)):
-    """
-    Returns deep Screener-style fundamental analysis for an NSE stock,
-    including EPS, P/E, P/B, Market Cap, Strengths, Weaknesses,
-    Fundamental Rating, and Double Confirmation verdict with SMA 6 & 30.
-    """
-    clean_sym = symbol.strip().upper()
-
-    # Look up latest technical crossover signal for this stock
-    sma_signal = None
-    if scanner_manager.latest_results:
-        for r in scanner_manager.latest_results:
-            if r.get("Symbol") == clean_sym:
-                sma_signal = r.get("Signal Type")
-                break
-
-    if not sma_signal:
-        latest_res = (
-            db.query(ScanResult)
-            .filter(ScanResult.symbol == clean_sym)
-            .order_by(ScanResult.id.desc())
-            .first()
-        )
-        if latest_res:
-            sma_signal = latest_res.signal_type
-
-    from backend.analyzer import get_stock_analysis
-    return get_stock_analysis(clean_sym, sma_signal=sma_signal)
 
 # In-memory leaderboard cache (TTL 300 seconds)
 _LEADERBOARD_CACHE: Dict[str, Any] = {"timestamp": 0.0, "data": []}
