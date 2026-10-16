@@ -6,10 +6,6 @@ from pydantic import Field
 from cryptography.fernet import Fernet
 
 class Settings(BaseSettings):
-    # Upstox API credentials
-    UPSTOX_CLIENT_ID: str = Field(default="", description="Upstox API Key / Client ID")
-    UPSTOX_CLIENT_SECRET: str = Field(default="", description="Upstox API Secret / Client Secret")
-    UPSTOX_REDIRECT_URI: str = Field(default="http://localhost:8000/api/auth/callback", description="OAuth Redirect URI")
 
     # Admin Single Login Credentials
     ADMIN_USERNAME: str = Field(default="suriyaprakash", description="Admin login username")
