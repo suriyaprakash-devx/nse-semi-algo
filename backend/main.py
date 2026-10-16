@@ -307,6 +307,26 @@ async def get_algo_swing_analysis(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/algo/best-stocks")
+async def get_algo_best_stocks(
+    limit: int = 25,
+    refresh: bool = False
+):
+    """
+    Ranks top NSE candidate stocks using the AI Swing Trading System v4.0.
+    Produces a composite Quantitative Alpha Score (0 - 100), categorization tiers,
+    concrete trade plans (Entry, Target, Stoploss, R/R), and bullish catalysts.
+    Helps traders instantly spot the highest-conviction swing trade opportunities (Slide 3).
+    """
+    from backend.algo_swing import get_best_swing_stocks
+    try:
+        data = await asyncio.to_thread(get_best_swing_stocks, limit=limit, force_refresh=refresh)
+        return data
+    except Exception as e:
+        logger.error(f"Error in Best Stocks Radar: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/scanner-data")
 async def get_scanner_data():
     """

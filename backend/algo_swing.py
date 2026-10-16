@@ -74,7 +74,8 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     any algorithmic calculations, parameters, models, or decision rules.
     """
     company = company_symbol.strip().upper().replace(".NS", "")
-    stock   = company + ".NS"
+    from backend.universe import get_yahoo_ticker
+    stock   = get_yahoo_ticker(company)
 
     now = time.time()
     if not force_refresh and company in _SWING_CACHE:
@@ -348,6 +349,7 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     win_rate      = (wins / total_trades * 100) if total_trades > 0 else 0.0
     avg_profit    = float(np.mean(profits))      if profits else 0.0
     avg_win       = float(np.mean([p for p in profits if p > 0])) if any(p > 0 for p in profits) else 0.0
+    avg_loss      = float(np.mean([p for p in profits if p < 0])) if any(p < 0 for p in profits) else 0.0
     if avg_loss != 0:
         profit_factor = abs(avg_win / avg_loss)
     elif avg_win > 0:
@@ -519,3 +521,165 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     }
 
     return response_payload
+
+
+# =========================================================
+# BEST STOCKS QUANTITATIVE RADAR (SLIDE 3)
+# =========================================================
+
+_BEST_STOCKS_CACHE: Dict[str, Any] = {"data": None, "timestamp": 0}
+
+DEFAULT_RADAR_CANDIDATES = [
+    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
+    "BHARTIARTL", "SBIN", "LT", "BAJFINANCE", "MARUTI",
+    "SUNPHARMA", "TITAN", "NTPC", "AXISBANK", "POWERGRID",
+    "ONGC", "TATASTEEL", "ADANIENT", "COALINDIA", "JSWSTEEL",
+    "HEROMOTOCO", "EICHERMOT", "CIPLA", "APOLLOHOSP", "DRREDDY",
+    "DIVISLAB", "VEDL", "TRENT", "BEL", "HAL",
+    "DIXON", "POLYCAB", "PERSISTENT", "COFORGE", "KOTAKBANK"
+]
+
+def get_best_swing_stocks(
+    candidate_symbols: Optional[List[str]] = None,
+    limit: int = 25,
+    force_refresh: bool = False
+) -> Dict[str, Any]:
+    """
+    Ranks top NSE candidate stocks using the exact AI Swing Trading System v4.0.
+    Produces a composite Quantitative Alpha Score (0 - 100), categorization tiers,
+    concrete trade plans (Entry, Target, Stoploss, R/R), and bullish catalysts.
+    Helps traders instantly spot the highest-conviction swing trade opportunities.
+    """
+    global _BEST_STOCKS_CACHE
+    now = time.time()
+    if not force_refresh and _BEST_STOCKS_CACHE["data"] is not None and (now - _BEST_STOCKS_CACHE["timestamp"] < 600):
+        cached_list = _BEST_STOCKS_CACHE["data"]
+        return {
+            "status": "success",
+            "count": len(cached_list[:limit]),
+            "last_updated": datetime.datetime.fromtimestamp(_BEST_STOCKS_CACHE["timestamp"]).strftime("%Y-%m-%d %H:%M:%S"),
+            "stocks": cached_list[:limit]
+        }
+
+    symbols = candidate_symbols if (candidate_symbols and len(candidate_symbols) > 0) else DEFAULT_RADAR_CANDIDATES
+
+    results = []
+
+    def worker(sym: str):
+        try:
+            analysis = run_ai_swing_analysis(sym)
+            if not analysis:
+                return None
+
+            trade_plan = analysis.get("trade_plan", {})
+            indicators = analysis.get("indicators", {})
+            mtf = analysis.get("multi_timeframe", {})
+            backtest = analysis.get("backtest", {})
+            prob = float(analysis.get("ai_probability", 0.0))
+            buy_score = int(analysis.get("buy_score", 0))
+            rr = float(trade_plan.get("risk_reward", 0.0))
+            win_rate = float(backtest.get("win_rate_pct", 0.0))
+            st_bull = indicators.get("supertrend") == "BULLISH"
+            wk_bull = mtf.get("weekly_trend") == "BULLISH"
+            above_200 = bool(mtf.get("above_ema200", False))
+            rs = float(indicators.get("rs_vs_nifty_pct", 0.0))
+            rsi = float(indicators.get("rsi", 50.0))
+            vol_ratio = float(indicators.get("vol_ratio", 1.0))
+            signal = analysis.get("signal", "WAIT")
+
+            # Composite Quantitative Alpha Score (0 - 100)
+            pts_prob = (prob / 100.0) * 35.0
+            pts_rules = (buy_score / 8.0) * 25.0
+            pts_rr = min(20.0, (rr / 2.5) * 20.0)
+            pts_trend = (5.0 if st_bull else 0.0) + (5.0 if wk_bull else 0.0)
+            pts_edge = min(5.0, (win_rate / 75.0) * 5.0) + (5.0 if rs > 0 else 0.0)
+
+            alpha_score = round(min(100.0, max(0.0, pts_prob + pts_rules + pts_rr + pts_trend + pts_edge)), 1)
+
+            if signal == "STRONG BUY" or alpha_score >= 78.0:
+                tier = "TIER_1_PRIME"
+                tier_label = "👑 Prime Alpha (Strong Buy)"
+                tier_color = "var(--bullish-neon)"
+            elif signal == "BUY" or alpha_score >= 62.0:
+                tier = "TIER_2_CONVICTION"
+                tier_label = "⭐ High Conviction Swing"
+                tier_color = "#38bdf8"
+            elif alpha_score >= 48.0:
+                tier = "TIER_3_WATCHLIST"
+                tier_label = "🟡 Watchlist Setup"
+                tier_color = "#fbbf24"
+            else:
+                tier = "TIER_4_AVOID"
+                tier_label = "⚠️ Avoid / High Risk"
+                tier_color = "var(--bearish-neon)"
+
+            catalysts = []
+            if prob >= 60.0:
+                catalysts.append(f"AI Win Prob {prob:.1f}%")
+            if rr >= 1.8:
+                catalysts.append(f"R/R 1:{rr:.2f}")
+            if st_bull and wk_bull:
+                catalysts.append("Daily & Weekly Bullish")
+            elif st_bull:
+                catalysts.append("Supertrend Bullish")
+            if rs > 0:
+                catalysts.append(f"Outperforming NIFTY (+{rs:.1f}%)")
+            if vol_ratio >= 1.3:
+                catalysts.append(f"Volume Surge {vol_ratio:.1f}x")
+            if 45 <= rsi <= 68:
+                catalysts.append(f"RSI {rsi:.0f} Optimal")
+            if buy_score >= 5:
+                catalysts.append(f"{buy_score}/8 Checks Passed")
+
+            return {
+                "symbol": sym,
+                "price": analysis.get("current_price", 0.0),
+                "signal": signal,
+                "ai_probability": prob,
+                "alpha_score": alpha_score,
+                "alpha_tier": tier,
+                "alpha_tier_label": tier_label,
+                "alpha_tier_color": tier_color,
+                "buy_score": buy_score,
+                "entry_price": trade_plan.get("entry_price", analysis.get("current_price")),
+                "target_price": trade_plan.get("target_price"),
+                "target_pct": trade_plan.get("target_pct"),
+                "stoploss_price": trade_plan.get("stoploss_price"),
+                "stoploss_pct": trade_plan.get("stoploss_pct"),
+                "risk_reward": rr,
+                "hold_period_days": trade_plan.get("hold_period_days", 5),
+                "win_rate_pct": win_rate,
+                "rsi": rsi,
+                "adx": indicators.get("adx"),
+                "supertrend": indicators.get("supertrend"),
+                "weekly_trend": mtf.get("weekly_trend"),
+                "above_ema200": above_200,
+                "rs_vs_nifty_pct": rs,
+                "vol_ratio": vol_ratio,
+                "catalysts": catalysts[:4]
+            }
+        except Exception as e:
+            logger.warning(f"Error scoring {sym}: {e}")
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [executor.submit(worker, sym) for sym in symbols]
+        for f in concurrent.futures.as_completed(futures):
+            item = f.result()
+            if item:
+                results.append(item)
+
+    results.sort(key=lambda x: (x["alpha_score"], x["ai_probability"]), reverse=True)
+
+    for idx, item in enumerate(results, 1):
+        item["rank"] = idx
+
+    _BEST_STOCKS_CACHE["data"] = results
+    _BEST_STOCKS_CACHE["timestamp"] = now
+
+    return {
+        "status": "success",
+        "count": len(results[:limit]),
+        "last_updated": datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
+        "stocks": results[:limit]
+    }

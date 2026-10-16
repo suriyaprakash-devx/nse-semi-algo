@@ -38,6 +38,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import AlgoSignals from './AlgoSignals'
+import BestStocksRadar from './BestStocksRadar'
 import { App as CapApp } from '@capacitor/app'
 import { StatusBar, Style } from '@capacitor/status-bar'
 import { Capacitor } from '@capacitor/core'
@@ -1057,6 +1058,14 @@ export default function App() {
           <span>2️⃣ Algo Signals</span>
           <span className="app-mode-badge gold">AI Swing v4.0</span>
         </button>
+        <button
+          className={`app-mode-btn ${activeApp === 'best_stocks' ? 'active' : ''}`}
+          onClick={() => setActiveApp('best_stocks')}
+        >
+          <Sparkles size={16} style={{ color: '#fbbf24' }} />
+          <span>3️⃣ Best Stocks Radar</span>
+          <span className="app-mode-badge gold">Top Alpha Picks</span>
+        </button>
       </nav>
 
       {/* Notifications */}
@@ -1547,6 +1556,19 @@ export default function App() {
       {/* ========================================================================= */}
       {activeApp === 'algo_signals' && (
         <AlgoSignals apiBase={API_BASE} initialSymbol={algoSymbol} />
+      )}
+
+      {/* ========================================================================= */}
+      {/* APP 3: BEST STOCKS RADAR (TOP QUANT OPPORTUNITIES & ALPHA SCREENER)       */}
+      {/* ========================================================================= */}
+      {activeApp === 'best_stocks' && (
+        <BestStocksRadar
+          apiBase={API_BASE}
+          onSelectStock={(sym) => {
+            setAlgoSymbol(sym)
+            setActiveApp('algo_signals')
+          }}
+        />
       )}
 
       {/* ========================================================================= */}
