@@ -6,17 +6,9 @@
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js",
     "build": "node ./node_modules/vite/bin/vite.js build",
-    "preview": "node ./node_modules/vite/bin/vite.js preview",
-    "cap:sync": "node ./node_modules/@capacitor/cli/bin/capacitor sync android",
-    "cap:open": "node ./node_modules/@capacitor/cli/bin/capacitor open android",
-    "cap:build": "npm run build && node ./node_modules/@capacitor/cli/bin/capacitor sync android"
+    "preview": "node ./node_modules/vite/bin/vite.js preview"
   },
   "dependencies": {
-    "@capacitor/android": "^8.5.3",
-    "@capacitor/app": "^8.1.2",
-    "@capacitor/cli": "^8.5.3",
-    "@capacitor/core": "^8.5.3",
-    "@capacitor/status-bar": "^8.0.4",
     "lucide-react": "^1.48.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

@@ -308,22 +308,49 @@ async def get_algo_swing_analysis(
 
 
 @app.get("/api/algo/best-stocks")
+@app.get("/api/algo/sma-bullish-ai")
 async def get_algo_best_stocks(
-    limit: int = 25,
-    refresh: bool = False
+    limit: int = 30,
+    refresh: bool = False,
+    db: Session = Depends(get_db)
 ):
     """
-    Ranks top NSE candidate stocks using the AI Swing Trading System v4.0.
-    Produces a composite Quantitative Alpha Score (0 - 100), categorization tiers,
-    concrete trade plans (Entry, Target, Stoploss, R/R), and bullish catalysts.
-    Helps traders instantly spot the highest-conviction swing trade opportunities (Slide 3).
+    Slide 3: Evaluates confirmed BULLISH stocks from SMA 6 & 30 analysis using the
+    exact AI Swing Trading System v4.0 and delivers them with AI PROBABILITY AT THE TOP.
     """
     from backend.algo_swing import get_best_swing_stocks
+
+    # Pull confirmed Bullish stocks from SMA 6 & 30 scanner
+    bullish_candidates = []
+    if scanner_manager.latest_results:
+        bullish_candidates = [
+            r["Symbol"] for r in scanner_manager.latest_results
+            if r.get("Signal Type") == "BULLISH" and r.get("Symbol")
+        ]
+    
+    if not bullish_candidates:
+        latest_run = (
+            db.query(ScanRun)
+            .filter(ScanRun.status == "completed")
+            .order_by(ScanRun.id.desc())
+            .first()
+        )
+        if latest_run and latest_run.results:
+            bullish_candidates = [
+                r.symbol for r in latest_run.results
+                if r.signal_type == "BULLISH" and r.symbol
+            ]
+
     try:
-        data = await asyncio.to_thread(get_best_swing_stocks, limit=limit, force_refresh=refresh)
+        data = await asyncio.to_thread(
+            get_best_swing_stocks,
+            candidate_symbols=bullish_candidates if bullish_candidates else None,
+            limit=limit,
+            force_refresh=refresh
+        )
         return data
     except Exception as e:
-        logger.error(f"Error in Best Stocks Radar: {e}")
+        logger.error(f"Error in SMA Bullish AI Analysis: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

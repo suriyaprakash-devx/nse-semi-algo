@@ -1,6 +1,6 @@
 # NSE Semi-Algo Quantitative Stock Terminal
 
-A high-performance, institutional-grade quantitative stock scanner and decision support system for NSE equities (**NIFTY 100 & NIFTY 200 universe**), powered exclusively by **Yahoo Finance (yfinance)**, **Real-Time Live Market Feed**, **FastAPI**, **React + Vite**, and **Capacitor Android APK**.
+A high-performance, institutional-grade quantitative stock scanner and decision support web application for NSE equities (**NIFTY 100 & NIFTY 200 universe**), powered exclusively by **Yahoo Finance (yfinance)**, **Real-Time Live Market Feed**, **FastAPI**, and **React + Vite**.
 
 > **Safety Notice**: This application is strictly an analytical scanner and decision support system. It **does NOT place automated buy or sell orders**.
 
@@ -14,8 +14,8 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
 - **Streamlined Workflow**: Focused on 3 institutional high-conviction decision support modules:
   1. **1️⃣ SMA 6 & 30 Confirmed Crossover Scanner**
   2. **2️⃣ Algo Signals (AI Swing Trading System v4.0)**
-  3. **3️⃣ Best Stocks Radar (Top Swing Alpha Screener)**
-- **Cross-Platform Delivery**: Production-ready Web Application (React 19 + Vite + Glassmorphic Obsidian/Crystal Theme) and native Android APK container (Capacitor 8).
+  3. **3️⃣ SMA Bullish AI Radar (AI Probability at Top)**
+- **Modern Responsive Web Terminal**: Production-ready Web Application (React 19 + Vite + Glassmorphic Obsidian/Crystal Theme) designed for seamless desktop and mobile web experiences.
 
 ---
 
@@ -24,11 +24,11 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
 ```
                       +-------------------------------------------------------+
                       |       React + Vite Frontend (Glassmorphic UI)         |
-                      |  - Module 1: SMA 6 & 30 Crossover Scanner (yfinance)  |
-                      |  - Module 2: Algo Signals (AI Swing Trading v4.0)     |
-                      |  - Module 3: Best Stocks Radar (Top Swing Alpha)      |
-                      |  - Single User Auth (suriyaprakash / master730)       |
-                      |  - Android APK (Capacitor 8) & Web SPA                |
+                      |  - Slide 1: SMA 6 & 30 Crossover Scanner (yfinance)   |
+                      |  - Slide 2: Algo Signals (AI Swing Trading v4.0)      |
+                      |  - Slide 3: SMA Bullish AI Radar (AI Prob at Top)     |
+                      |  - Single User Auth (suriyaprakash / master730)        |
+                      |  - Desktop & Mobile Web Browser SPA                   |
                       +---------------------------+---------------------------+
                                                   |
                                    HTTP / REST API & WebSocket (/ws/ticks)
@@ -120,26 +120,11 @@ Interactive API documentation is available at `http://localhost:8000/docs`.
 ```bash
 cd frontend
 npm install
-npm run build      # Compiles production bundle to frontend/dist
+npm run build      # Compiles production web bundle to frontend/dist
 npm run dev        # Starts Vite local development server
 ```
 
-### 3. Android APK (Capacitor 8)
-The Android application is packaged using Capacitor:
-```bash
-cd frontend
-# 1. Build Vite web bundle
-npm run build
-
-# 2. Sync web bundle to Android project
-node ./node_modules/@capacitor/cli/bin/capacitor sync android
-
-# 3. Assemble debug APK using Gradle
-cd android
-.\gradlew.bat assembleDebug
-```
-The compiled APK will be generated at:
-`frontend/android/app/build/outputs/apk/debug/app-debug.apk`
+Access the web application at `http://localhost:5173` on desktop or mobile browser.
 
 ---
 

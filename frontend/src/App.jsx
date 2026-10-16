@@ -39,9 +39,6 @@ import {
 import './App.css'
 import AlgoSignals from './AlgoSignals'
 import BestStocksRadar from './BestStocksRadar'
-import { App as CapApp } from '@capacitor/app'
-import { StatusBar, Style } from '@capacitor/status-bar'
-import { Capacitor } from '@capacitor/core'
 import { apiFetch } from './apiClient'
 
 // Default Production Server URL
@@ -217,12 +214,7 @@ export default function App() {
 
           <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', paddingTop: '10px' }}>
             <div style={{ fontSize: '0.82rem', color: 'var(--text-sub)', lineHeight: 1.5 }}>
-              Configure the Python FastAPI backend URL for this app.
-              {Capacitor.isNativePlatform() && (
-                <div style={{ marginTop: '6px', color: 'var(--accent-cyan)', fontWeight: 600 }}>
-                  📱 Running in Android app mode. Connect to your deployed HTTPS API (e.g. Render) or your local PC Wi-Fi IP (e.g. <code>http://192.168.1.5:8000</code>).
-                </div>
-              )}
+              Configure the Python FastAPI backend URL for this web terminal.
             </div>
 
             <div className="token-input-container">
@@ -329,22 +321,6 @@ export default function App() {
     }
   }, [showServerModal, activeApp])
 
-  // Android Status Bar Theme Synchronization
-  useEffect(() => {
-    try {
-      if (Capacitor.isNativePlatform()) {
-        if (theme === 'dark') {
-          StatusBar.setStyle({ style: Style.Dark }).catch(() => {})
-          StatusBar.setBackgroundColor({ color: '#070f1e' }).catch(() => {})
-        } else {
-          StatusBar.setStyle({ style: Style.Light }).catch(() => {})
-          StatusBar.setBackgroundColor({ color: '#ffffff' }).catch(() => {})
-        }
-      }
-    } catch (e) {
-      // Safe fallback
-    }
-  }, [theme])
 
   // 1. Check Authentication Status on mount and whenever apiBase changes
   const checkAuth = async () => {
@@ -749,7 +725,7 @@ export default function App() {
           </div>
         </header>
 
-        {(backendOffline || (!apiBase && Capacitor.isNativePlatform())) && (
+        {backendOffline && (
           <div style={{
             margin: '12px 20px 0',
             padding: '10px 16px',
@@ -1063,8 +1039,8 @@ export default function App() {
           onClick={() => setActiveApp('best_stocks')}
         >
           <Sparkles size={16} style={{ color: '#fbbf24' }} />
-          <span>3️⃣ Best Stocks Radar</span>
-          <span className="app-mode-badge gold">Top Alpha Picks</span>
+          <span>3️⃣ SMA Bullish AI Radar</span>
+          <span className="app-mode-badge gold">AI Probability at Top</span>
         </button>
       </nav>
 

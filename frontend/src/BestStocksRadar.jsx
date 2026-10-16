@@ -87,14 +87,17 @@ export default function BestStocksRadar({ apiBase, onSelectStock }) {
 
     // Category Filter
     if (activeFilter === 'PRIME') {
-      list = list.filter(s => s.signal === 'STRONG BUY' || s.alpha_score >= 75)
+      list = list.filter(s => (s.ai_probability || 0) >= 65 || s.signal === 'STRONG BUY')
     } else if (activeFilter === 'CONVICTION') {
-      list = list.filter(s => s.signal === 'STRONG BUY' || s.signal === 'BUY')
+      list = list.filter(s => (s.ai_probability || 0) >= 50 || s.signal === 'BUY' || s.signal === 'STRONG BUY')
     } else if (activeFilter === 'HIGH_RR') {
       list = list.filter(s => (s.risk_reward || 0) >= 2.0)
     } else if (activeFilter === 'OUTPERFORMING') {
       list = list.filter(s => (s.rs_vs_nifty_pct || 0) > 0)
     }
+
+    // Always keep highest AI Probability at the top
+    list.sort((a, b) => (Number(b.ai_probability) || 0) - (Number(a.ai_probability) || 0))
 
     return list
   }, [stocks, searchQuery, activeFilter])
@@ -180,11 +183,11 @@ export default function BestStocksRadar({ apiBase, onSelectStock }) {
             </div>
             <div>
               <h2 className="radar-main-title">
-                <span>AI Best Stocks Radar</span>
-                <span className="app-mode-badge gold">Top Swing Alpha v4.0</span>
+                <span>SMA 6 & 30 Bullish Crosses — AI Probability Radar</span>
+                <span className="app-mode-badge gold">AI Probability at Top</span>
               </h2>
               <div className="radar-subtitle">
-                Automated multi-factor quantitative ranking across NSE equities. Evaluates XGBoost ML probability, Risk/Reward, Supertrend, Multi-Timeframe Alignment, and relative strength to spot the highest-conviction trades.
+                Analyzes confirmed BULLISH stocks from SMA 6 & 30 Crossover Scanner using the exact AI Swing Trading System v4.0 code. Sorted with the highest AI Win Probability at the top.
               </div>
             </div>
           </div>
@@ -375,6 +378,38 @@ export default function BestStocksRadar({ apiBase, onSelectStock }) {
                   key={stock.symbol}
                   className={`radar-stock-card glass-panel ${isPrime ? 'card-prime' : ''}`}
                 >
+                  {/* PROMINENT AI PROBABILITY BANNER AT TOP */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    background: stock.ai_probability >= 65 ? 'rgba(16, 185, 129, 0.16)' : 'rgba(56, 189, 248, 0.12)',
+                    border: `1px solid ${stock.ai_probability >= 65 ? 'rgba(16, 185, 129, 0.4)' : 'rgba(56, 189, 248, 0.3)'}`,
+                    marginBottom: '12px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Target size={16} style={{ color: stock.ai_probability >= 65 ? 'var(--bullish-neon)' : '#38bdf8' }} />
+                      <span style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-sub)', letterSpacing: '0.5px' }}>
+                        AI WIN PROBABILITY:
+                      </span>
+                      <span className="font-mono" style={{ fontSize: '1.05rem', fontWeight: 800, color: stock.ai_probability >= 65 ? 'var(--bullish-neon)' : '#ffffff' }}>
+                        {formatNum(stock.ai_probability, 1)}%
+                      </span>
+                    </div>
+                    <span style={{
+                      fontSize: '0.68rem',
+                      fontFamily: 'var(--font-mono)',
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                      background: 'rgba(255, 255, 255, 0.08)',
+                      color: 'var(--accent-cyan)'
+                    }}>
+                      SMA 6&30 Bullish
+                    </span>
+                  </div>
+
                   {/* Card Header */}
                   <div className="radar-card-header">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

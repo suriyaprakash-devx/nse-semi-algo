@@ -436,16 +436,10 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     buy_score   = sum(1 for c in buy_check_items if c["passed"])
     avoid_score = sum(1 for c in avoid_check_items if c["passed"])
 
-    # Robust, institutional confirmation logic:
-    # A stock with low AI probability (< 38%) or high danger flags can NEVER be a BUY.
-    if prob < AVOID_PROB_MAX or avoid_score >= 3 or (price < ema200_val and weekly_trend == "BEARISH"):
-        signal = "AVOID"
-    elif prob >= BUY_PROB_MIN and buy_score >= 6 and avoid_score == 0:
-        signal = "STRONG BUY"
-    elif prob >= 50.0 and buy_score >= 4 and avoid_score <= 1:
-        signal = "BUY"
-    else:
-        signal = "WAIT"
+    if buy_score >= 6:        signal = "STRONG BUY"
+    elif buy_score >= 4:      signal = "BUY"
+    elif avoid_score >= 3:    signal = "AVOID"
+    else:                     signal = "WAIT"
 
     # Hold period estimate
     if   adx_val > 40: hold_days = 3
@@ -681,6 +675,9 @@ def get_best_swing_stocks(
                 "entry_price": trade_plan.get("entry_price", analysis.get("current_price")),
                 "target_price": trade_plan.get("target_price"),
                 "target_pct": trade_plan.get("target_pct"),
+                "target_1": trade_plan.get("target_1", trade_plan.get("target_price")),
+                "target_2": trade_plan.get("target_2", trade_plan.get("target_price")),
+                "target_3": trade_plan.get("target_3"),
                 "stoploss_price": trade_plan.get("stoploss_price"),
                 "stoploss_pct": trade_plan.get("stoploss_pct"),
                 "risk_reward": rr,
@@ -706,7 +703,8 @@ def get_best_swing_stocks(
             if item:
                 results.append(item)
 
-    results.sort(key=lambda x: (x["alpha_score"], x["ai_probability"]), reverse=True)
+    # Sort with AI PROBABILITY AT TOP (highest probability descending)
+    results.sort(key=lambda x: (x["ai_probability"], x["buy_score"]), reverse=True)
 
     for idx, item in enumerate(results, 1):
         item["rank"] = idx
