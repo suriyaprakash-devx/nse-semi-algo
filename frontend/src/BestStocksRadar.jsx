@@ -17,7 +17,8 @@ import {
   BarChart3,
   ArrowRight,
   Flame,
-  Clock
+  Clock,
+  Download
 } from 'lucide-react'
 import './BestStocksRadar.css'
 import { apiFetch } from './apiClient'
@@ -106,7 +107,65 @@ export default function BestStocksRadar({ apiBase, onSelectStock }) {
     const total = stocks.reduce((acc, s) => acc + (s.risk_reward || 0), 0)
     return (total / stocks.length).toFixed(2)
   }, [stocks])
+
   const topStock = useMemo(() => (stocks.length > 0 ? stocks[0] : null), [stocks])
+
+  const handleExportCSV = () => {
+    if (!filteredStocks || filteredStocks.length === 0) return
+    const headers = [
+      'Rank',
+      'Symbol',
+      'Signal',
+      'Alpha Score',
+      'Alpha Tier',
+      'Price',
+      'Target 1',
+      'Target 2',
+      'Stoploss',
+      'Risk Reward',
+      'Hold Days',
+      'Probability %',
+      'Buy Checks Passed',
+      'RS vs NIFTY %',
+      'Weekly Trend',
+      'Catalysts'
+    ]
+
+    const rows = filteredStocks.map((s, idx) => [
+      idx + 1,
+      s.symbol,
+      s.signal,
+      s.alpha_score,
+      s.alpha_tier,
+      s.price,
+      s.target_1 || s.target,
+      s.target_2 || (s.price + (s.target - s.price) * 1.5),
+      s.stoploss,
+      s.risk_reward,
+      s.hold_period_days,
+      s.probability,
+      `${s.buy_score}/8`,
+      s.rs_vs_nifty_pct,
+      s.weekly_trend,
+      (s.catalysts || []).join('; ')
+    ])
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
+    ].join('\n')
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const dateStr = new Date().toISOString().slice(0, 10)
+    link.setAttribute('href', url)
+    link.setAttribute('download', `nse_best_swing_stocks_${dateStr}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <section className="best-stocks-radar-wrap">
@@ -132,6 +191,15 @@ export default function BestStocksRadar({ apiBase, onSelectStock }) {
         </div>
 
         <div className="radar-hero-actions">
+          <button
+            className="btn btn-secondary"
+            onClick={handleExportCSV}
+            disabled={!filteredStocks.length}
+            title="Export filtered opportunities to CSV spreadsheet"
+          >
+            <Download size={14} />
+            <span>Export CSV</span>
+          </button>
           <button
             className="btn btn-secondary"
             onClick={() => setViewMode(prev => (prev === 'cards' ? 'table' : 'cards'))}

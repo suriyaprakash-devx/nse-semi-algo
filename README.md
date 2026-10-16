@@ -11,9 +11,10 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
 - **Zero Upstox Dependency**: Completely decoupled from Upstox OAuth, API tokens, and developer portal logins.
 - **Yahoo Finance Engine**: All historical and live OHLCV data for NSE equities is fetched via `yfinance` in parallel asynchronous batches.
 - **Single-User Authentication**: Secure terminal access with username `suriyaprakash` and password `master730`.
-- **Streamlined Workflow**: Completely removed the legacy Stock Screener Analysis module, focusing on high-conviction signals:
-  1. **SMA 6 & 30 Confirmed Crossover Scanner**
-  2. **Algo Signals (AI Swing Trading System v4.0)**
+- **Streamlined Workflow**: Focused on 3 institutional high-conviction decision support modules:
+  1. **1️⃣ SMA 6 & 30 Confirmed Crossover Scanner**
+  2. **2️⃣ Algo Signals (AI Swing Trading System v4.0)**
+  3. **3️⃣ Best Stocks Radar (Top Swing Alpha Screener)**
 - **Cross-Platform Delivery**: Production-ready Web Application (React 19 + Vite + Glassmorphic Obsidian/Crystal Theme) and native Android APK container (Capacitor 8).
 
 ---
@@ -25,6 +26,7 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
                       |       React + Vite Frontend (Glassmorphic UI)         |
                       |  - Module 1: SMA 6 & 30 Crossover Scanner (yfinance)  |
                       |  - Module 2: Algo Signals (AI Swing Trading v4.0)     |
+                      |  - Module 3: Best Stocks Radar (Top Swing Alpha)      |
                       |  - Single User Auth (suriyaprakash / master730)       |
                       |  - Android APK (Capacitor 8) & Web SPA                |
                       +---------------------------+---------------------------+
@@ -39,6 +41,7 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
                       |  - Real-Time Live Market Quote Feed Engine            |
                       |  - Deduplicated NIFTY 100 + 200 Universe Engine       |
                       |  - SMA 6 & 30 Confirmed Crossover Engine              |
+                      |  - AI Swing v4.0 Multi-Threaded Alpha Radar Engine    |
                       +-------------+-----------------------+-----------------+
                                     |                       |
                      SQLAlchemy ORM |                       | yfinance / Yahoo Chart API
@@ -53,7 +56,7 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
 
 ---
 
-## 2 Core Quantitative Modules
+## 3 Core Quantitative Modules
 
 ### 1️⃣ SMA 6 & 30 Crossover Scanner
 - **Powered by yfinance**: Downloads 6-month historical OHLCV data directly in concurrent batches of 25 equities with automatic individual fallbacks.
@@ -68,13 +71,27 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
 - **Direct Drill-down**: Click any stock to view crossover breakdown, jump directly to AI Swing Trading Model v4.0, or view the live TradingView chart.
 
 ### 2️⃣ Algo Signals (AI Swing Trading System v4.0)
-- **Probabilistic Machine Learning Engine**: TimeSeriesSplit XGBoost cross-validation combined with Supertrend and Relative Strength vs NIFTY 50.
-- **Multi-Pillar Quantitative Evaluation**:
-  - Technical Trend Momentum & Moving Average Alignment
-  - Volatility & Range Expansion (ATR)
-  - Volume Anomaly & Order Flow Surge
-  - Risk-to-Reward Ratio (Entry, Target 1/2/3, Stoploss)
-- **Trade Plan Synthesizer**: Concrete execution plans with exact entry price, invalidation stoploss, and profit targets.
+- **Probabilistic Machine Learning Engine**: TimeSeriesSplit (5 folds) XGBoost classifier combined with Supertrend and Relative Strength vs NIFTY 50.
+- **21 Engineered Features**: Normalized EMA distances (20/50/200), MACD, MACDH, ADX (+DI / -DI), ATR, Bollinger Band Width & Position, Stochastics, Volume Surge Ratio, Momentum (5d/20d), and Supertrend.
+- **Walk-Forward Validation**: Simulates out-of-sample trades on the last 20% of data to report real win rate, profit factor, average profit, and maximum drawdown.
+- **Interactive Tooling**:
+  - Live SVG Candlestick & EMA 20/50 chart with crosshair tooltips.
+  - Interactive cumulative return equity curve.
+  - Dynamic Position Sizing & Capital Allocator calculator (customizable portfolio size & risk % per trade).
+
+### 3️⃣ Best Stocks Radar (Top Swing Alpha Screener)
+- **Market-Wide Automated Screening**: Continuously evaluates top liquid NSE candidates through the exact v4.0 quantitative rules and ranks them using an institutional 0-100 **Alpha Score**.
+- **Alpha Tiers**:
+  - `👑 Prime Alpha` (Score ≥ 75 or Strong Buy)
+  - `⭐ High Conviction` (Passed core AI & confirmation rules)
+  - `🟡 Watchlist Setup` (Developing setups near trigger)
+  - `⚠️ Avoid` (High risk or negative momentum)
+- **Immediate Actionability**:
+  - Exact Entry, Stoploss (1.5x ATR), Target 1 (3.0x ATR), Target 2 (4.5x ATR), and Risk/Reward ratio.
+  - Expected holding period (3 to 8 trading days based on ADX trend strength).
+  - Bullish catalyst breakdown (e.g. Volume surge, Supertrend bullish, Outperforming NIFTY 50).
+  - Single-click CSV export (`nse_best_swing_stocks_YYYY-MM-DD.csv`).
+  - Seamless jump into Slide 2 to inspect full model breakdown.
 
 ---
 
