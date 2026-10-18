@@ -126,6 +126,13 @@ npm run dev        # Starts Vite local development server
 
 Access the web application at `http://localhost:5173` on desktop or mobile browser.
 
+### 3. Standalone AI Swing Trading System v4.0 Script
+You can also run the exact, untouched Python CLI script directly:
+```bash
+python ai_swing_v4.py
+# Enter NSE Symbol when prompted: RELIANCE, TCS, INFY, etc.
+```
+
 ---
 
 ## API Reference

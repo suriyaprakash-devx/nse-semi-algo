@@ -471,6 +471,58 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
             "ema50": round(float(row["EMA50"]), 2) if not pd.isna(row["EMA50"]) else None
         })
 
+    raw_lines = [
+        "=" * 50,
+        f"  SWING ANALYSIS: {company}",
+        "=" * 50,
+        f"  Date          : {datetime.date.today()}",
+        f"  Price         : {price:.2f}",
+        "",
+        "--- AI SIGNAL ---",
+        f"  Probability   : {prob:.2f}%",
+        f"  Signal        : {signal}",
+        f"  Buy Checks    : {buy_score}/8 passed",
+        "",
+        "--- TRADE PLAN ---",
+        f"  Entry         : {price:.2f}",
+        f"  Target        : {tg:.2f}  (+{((tg-price)/price*100):.2f}%)",
+        f"  Stoploss      : {sl:.2f}  (-{((price-sl)/price*100):.2f}%)",
+        f"  Risk/Reward   : 1 : {rr:.2f}",
+        f"  Hold Period   : ~{hold_days} trading days",
+        "",
+        "--- INDICATORS ---",
+        f"  RSI           : {rsi_val:.2f}  {'⚠ OVERBOUGHT' if rsi_val>70 else ('⚠ OVERSOLD' if rsi_val<30 else 'OK')}",
+        f"  ADX           : {adx_val:.2f}  {'STRONG' if adx_val>25 else 'WEAK'}",
+        f"  ATR           : {atr_val:.2f}",
+        f"  EMA 20/50/200 : {ema20_val:.2f} / {ema50_val:.2f} / {ema200_val:.2f}",
+        f"  Supertrend    : {'BULLISH' if st_bull else 'BEARISH'}",
+        f"  MACD Hist     : {macdh_val:.2f}  {'POSITIVE' if macdh_val>0 else 'NEGATIVE'}",
+        f"  Vol Ratio     : {vol_ratio:.2f}x  {'SURGE' if vol_ratio>1.5 else 'NORMAL'}",
+        f"  RS vs NIFTY   : {rs_20*100:.2f}%  {'OUTPERFORMING' if rs_20>0 else 'UNDERPERFORMING'}",
+        "",
+        "--- MULTI TIMEFRAME ---",
+        f"  Weekly Trend  : {weekly_trend}",
+        f"  Above EMA200  : {'YES' if price > ema200_val else 'NO — HIGH RISK'}",
+        "",
+        "--- MODEL QUALITY ---",
+        f"  CV Accuracy   : {avg_accuracy*100:.2f}% ± {std_accuracy*100:.2f}%",
+        "",
+        "--- BACKTEST (last 20% data) ---",
+        f"  Total Trades  : {total_trades}",
+        f"  Win Rate      : {win_rate:.2f}%",
+        f"  Avg Profit    : {avg_profit:.2f}%",
+        f"  Profit Factor : {profit_factor:.2f}  {'GOOD' if profit_factor>1.5 else 'MARGINAL'}",
+        f"  Max Drawdown  : {max_drawdown:.2f}%"
+    ]
+    if rr < MIN_RR:
+        raw_lines.append(f"\n  ⚠ R/R {rr:.2f} below minimum {MIN_RR} — skip trade")
+    if std_accuracy > 0.08:
+        raw_lines.append(f"  ⚠ High CV variance — model may be unstable on this stock")
+    if total_trades < 10:
+        raw_lines.append(f"  ⚠ Too few backtest trades — treat results with caution")
+    raw_lines.append("=" * 50)
+    raw_cli_output = "\n".join(raw_lines)
+
     response_payload = {
         "symbol": company,
         "ticker": stock,
@@ -543,6 +595,7 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
             "trades": trade_logs[-15:]
         },
         "warnings": warnings,
+        "raw_cli_output": raw_cli_output,
         "recent_history": recent_history
     }
 
