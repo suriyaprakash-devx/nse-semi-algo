@@ -109,10 +109,14 @@ Authentication tokens are validated locally and stored in encrypted local storag
 
 ### 1. Backend Service (FastAPI)
 ```bash
-# Windows
-.\venv\Scripts\activate
-# Start backend server
-uvicorn backend.main:app --reload --port 8000
+# Start backend server directly (Recommended)
+python -m uvicorn backend.main:app --reload --port 8000
+
+# Or using a virtual environment (Optional)
+# python -m venv venv
+# .\venv\Scripts\activate      # Windows (or: source venv/bin/activate on Linux/Mac)
+# pip install -r requirements.txt
+# python -m uvicorn backend.main:app --reload --port 8000
 ```
 Interactive API documentation is available at `http://localhost:8000/docs`.
 
