@@ -74,8 +74,7 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     any algorithmic calculations, parameters, models, or decision rules.
     """
     company = company_symbol.strip().upper().replace(".NS", "")
-    from backend.universe import get_yahoo_ticker
-    stock   = get_yahoo_ticker(company)
+    stock   = company + ".NS"
 
     now = time.time()
     if not force_refresh and company in _SWING_CACHE:
@@ -111,28 +110,9 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     except Exception as e:
         raise ValueError(f"Download Error for {stock}: {e}")
 
-    # Fallback for newer listings (< 5y history)
-    if df is None or df.empty:
-        try:
-            df = yf.download(stock, period="2y", interval="1d", auto_adjust=True, progress=False)
-        except Exception:
-            pass
-    if df is None or df.empty:
-        try:
-            df = yf.download(stock, period="max", interval="1d", auto_adjust=True, progress=False)
-        except Exception:
-            pass
-
-    if df_wk is None or df_wk.empty:
-        try:
-            df_wk = yf.download(stock, period="2y", interval="1wk", auto_adjust=True, progress=False)
-        except Exception:
-            pass
-
-    if df is None or df.empty:
-        raise ValueError(f"Stock Daily data not found for {stock}.")
-    if nifty is None or nifty.empty:
-        raise ValueError("NIFTY benchmark (^NSEI) data not found.")
+    for label, frame in [("Stock Daily", df), ("NIFTY", nifty), ("Stock Weekly", df_wk)]:
+        if frame is None or frame.empty:
+            raise ValueError(f"{label} data not found for {stock}.")
 
     # =========================================================
     # FIX COLUMNS
@@ -232,21 +212,12 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     # =========================================================
     # WEEKLY TREND  (multi-timeframe)
     # =========================================================
-    weekly_trend = "NEUTRAL"
-    try:
-        if df_wk is not None and not df_wk.empty and len(df_wk) >= 10:
-            wk_close = df_wk["Close"].squeeze()
-            df_wk["EMA20"] = EMAIndicator(wk_close, window=min(20, max(5, len(df_wk) // 2))).ema_indicator()
-            df_wk["EMA50"] = EMAIndicator(wk_close, window=min(50, max(10, len(df_wk) - 2))).ema_indicator()
-            valid_wk = df_wk.dropna(subset=["EMA20", "EMA50"])
-            if not valid_wk.empty:
-                weekly_trend = "BULLISH" if valid_wk["EMA20"].iloc[-1] > valid_wk["EMA50"].iloc[-1] else "BEARISH"
-    except Exception as e_wk:
-        logger.debug(f"Weekly trend calculation fallback: {e_wk}")
+    wk_close = df_wk["Close"].squeeze()
+    df_wk["EMA20"] = EMAIndicator(wk_close, window=20).ema_indicator()
+    df_wk["EMA50"] = EMAIndicator(wk_close, window=50).ema_indicator()
+    df_wk.dropna(inplace=True)
 
-    if weekly_trend == "NEUTRAL":
-        # Fallback to daily EMA20 vs EMA50 alignment
-        weekly_trend = "BULLISH" if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] else "BEARISH"
+    weekly_trend = "BULLISH" if df_wk["EMA20"].iloc[-1] > df_wk["EMA50"].iloc[-1] else "BEARISH"
 
     # =========================================================
     # TARGET  (did price rise in next SWING_DAYS?)
@@ -257,9 +228,6 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     # CLEAN
     # =========================================================
     df.dropna(inplace=True)
-
-    if len(df) < 30:
-        raise ValueError(f"Insufficient historical data for {stock} (only {len(df)} bars available after indicators). Minimum 30 trading sessions required.")
 
     # =========================================================
     # FEATURE SET
@@ -284,8 +252,7 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     # =========================================================
     # TIMESERIES CROSS-VALIDATION
     # =========================================================
-    actual_splits = min(N_SPLITS, max(2, len(df) // 30))
-    tscv = TimeSeriesSplit(n_splits=actual_splits)
+    tscv = TimeSeriesSplit(n_splits=N_SPLITS)
 
     model = XGBClassifier(
         n_estimators      = 200,
@@ -310,8 +277,8 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
         sc   = accuracy_score(y.iloc[test_idx], pred)
         fold_scores.append(round(float(sc * 100), 2))
 
-    avg_accuracy = float(np.mean(fold_scores)) / 100.0 if fold_scores else 0.5
-    std_accuracy = float(np.std(fold_scores)) / 100.0 if fold_scores else 0.0
+    avg_accuracy = float(np.mean(fold_scores)) / 100.0
+    std_accuracy = float(np.std(fold_scores)) / 100.0
 
     # Final fit on all data
     model.fit(X, y)
@@ -338,10 +305,7 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     bt_probs       = model.predict_proba(bt_X)[:, 1] * 100
 
     bt_df["BT_PROB"]   = bt_probs
-    # Adaptive threshold: if BUY_PROB_MIN yields fewer than 4 trades in out-of-sample window, test top percentile >= 52%
-    high_prob_count = (bt_df["BT_PROB"] > BUY_PROB_MIN).sum()
-    bt_threshold = BUY_PROB_MIN if high_prob_count >= 4 else 52.0
-    bt_df["BT_SIGNAL"] = np.where(bt_df["BT_PROB"] >= bt_threshold, 1, 0)
+    bt_df["BT_SIGNAL"] = np.where(bt_df["BT_PROB"] > BUY_PROB_MIN, 1, 0)
 
     # Simulate trades
     wins, losses, profits = 0, 0, []
@@ -372,12 +336,7 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     avg_profit    = float(np.mean(profits))      if profits else 0.0
     avg_win       = float(np.mean([p for p in profits if p > 0])) if any(p > 0 for p in profits) else 0.0
     avg_loss      = float(np.mean([p for p in profits if p < 0])) if any(p < 0 for p in profits) else 0.0
-    if avg_loss != 0:
-        profit_factor = abs(avg_win / avg_loss)
-    elif avg_win > 0:
-        profit_factor = 9.99  # All trades were wins
-    else:
-        profit_factor = 0.0
+    profit_factor = abs(avg_win / avg_loss)     if avg_loss != 0 else 0.0
 
     # Max Drawdown
     cum_returns   = np.cumsum(profits) if profits else np.array([0.0])
@@ -405,10 +364,7 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
 
     sl  = price - (ATR_SL_MULT * atr_val)
     tg  = price + (ATR_TG_MULT * atr_val)
-    tg1 = price + (1.5 * atr_val)
-    tg2 = price + (3.0 * atr_val)
-    tg3 = price + (4.5 * atr_val)
-    rr  = (tg2 - price) / (price - sl) if (price - sl) > 0 else 0.0
+    rr  = (tg - price) / (price - sl) if (price - sl) > 0 else 0.0
 
     # =========================================================
     # SIGNAL LOGIC  (multi-condition confirmation)
@@ -471,58 +427,6 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
             "ema50": round(float(row["EMA50"]), 2) if not pd.isna(row["EMA50"]) else None
         })
 
-    raw_lines = [
-        "=" * 50,
-        f"  SWING ANALYSIS: {company}",
-        "=" * 50,
-        f"  Date          : {datetime.date.today()}",
-        f"  Price         : {price:.2f}",
-        "",
-        "--- AI SIGNAL ---",
-        f"  Probability   : {prob:.2f}%",
-        f"  Signal        : {signal}",
-        f"  Buy Checks    : {buy_score}/8 passed",
-        "",
-        "--- TRADE PLAN ---",
-        f"  Entry         : {price:.2f}",
-        f"  Target        : {tg:.2f}  (+{((tg-price)/price*100):.2f}%)",
-        f"  Stoploss      : {sl:.2f}  (-{((price-sl)/price*100):.2f}%)",
-        f"  Risk/Reward   : 1 : {rr:.2f}",
-        f"  Hold Period   : ~{hold_days} trading days",
-        "",
-        "--- INDICATORS ---",
-        f"  RSI           : {rsi_val:.2f}  {'⚠ OVERBOUGHT' if rsi_val>70 else ('⚠ OVERSOLD' if rsi_val<30 else 'OK')}",
-        f"  ADX           : {adx_val:.2f}  {'STRONG' if adx_val>25 else 'WEAK'}",
-        f"  ATR           : {atr_val:.2f}",
-        f"  EMA 20/50/200 : {ema20_val:.2f} / {ema50_val:.2f} / {ema200_val:.2f}",
-        f"  Supertrend    : {'BULLISH' if st_bull else 'BEARISH'}",
-        f"  MACD Hist     : {macdh_val:.2f}  {'POSITIVE' if macdh_val>0 else 'NEGATIVE'}",
-        f"  Vol Ratio     : {vol_ratio:.2f}x  {'SURGE' if vol_ratio>1.5 else 'NORMAL'}",
-        f"  RS vs NIFTY   : {rs_20*100:.2f}%  {'OUTPERFORMING' if rs_20>0 else 'UNDERPERFORMING'}",
-        "",
-        "--- MULTI TIMEFRAME ---",
-        f"  Weekly Trend  : {weekly_trend}",
-        f"  Above EMA200  : {'YES' if price > ema200_val else 'NO — HIGH RISK'}",
-        "",
-        "--- MODEL QUALITY ---",
-        f"  CV Accuracy   : {avg_accuracy*100:.2f}% ± {std_accuracy*100:.2f}%",
-        "",
-        "--- BACKTEST (last 20% data) ---",
-        f"  Total Trades  : {total_trades}",
-        f"  Win Rate      : {win_rate:.2f}%",
-        f"  Avg Profit    : {avg_profit:.2f}%",
-        f"  Profit Factor : {profit_factor:.2f}  {'GOOD' if profit_factor>1.5 else 'MARGINAL'}",
-        f"  Max Drawdown  : {max_drawdown:.2f}%"
-    ]
-    if rr < MIN_RR:
-        raw_lines.append(f"\n  ⚠ R/R {rr:.2f} below minimum {MIN_RR} — skip trade")
-    if std_accuracy > 0.08:
-        raw_lines.append(f"  ⚠ High CV variance — model may be unstable on this stock")
-    if total_trades < 10:
-        raw_lines.append(f"  ⚠ Too few backtest trades — treat results with caution")
-    raw_lines.append("=" * 50)
-    raw_cli_output = "\n".join(raw_lines)
-
     response_payload = {
         "symbol": company,
         "ticker": stock,
@@ -537,14 +441,8 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
         "avoid_conditions": avoid_check_items,
         "trade_plan": {
             "entry_price": round(price, 2),
-            "target_price": round(tg2, 2),
-            "target_pct": round(((tg2 - price) / price * 100), 2),
-            "target_1": round(tg1, 2),
-            "target_1_pct": round(((tg1 - price) / price * 100), 2),
-            "target_2": round(tg2, 2),
-            "target_2_pct": round(((tg2 - price) / price * 100), 2),
-            "target_3": round(tg3, 2),
-            "target_3_pct": round(((tg3 - price) / price * 100), 2),
+            "target_price": round(tg, 2),
+            "target_pct": round(((tg - price) / price * 100), 2),
             "stoploss_price": round(sl, 2),
             "stoploss_pct": round(((price - sl) / price * 100), 2),
             "risk_reward": round(rr, 2),
@@ -595,7 +493,6 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
             "trades": trade_logs[-15:]
         },
         "warnings": warnings,
-        "raw_cli_output": raw_cli_output,
         "recent_history": recent_history
     }
 
@@ -605,169 +502,3 @@ def run_ai_swing_analysis(company_symbol: str, force_refresh: bool = False) -> D
     }
 
     return response_payload
-
-
-# =========================================================
-# BEST STOCKS QUANTITATIVE RADAR (SLIDE 3)
-# =========================================================
-
-_BEST_STOCKS_CACHE: Dict[str, Any] = {"data": None, "timestamp": 0}
-
-DEFAULT_RADAR_CANDIDATES = [
-    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
-    "BHARTIARTL", "SBIN", "LT", "BAJFINANCE", "MARUTI",
-    "SUNPHARMA", "TITAN", "NTPC", "AXISBANK", "POWERGRID",
-    "ONGC", "TATASTEEL", "ADANIENT", "COALINDIA", "JSWSTEEL",
-    "HEROMOTOCO", "EICHERMOT", "CIPLA", "APOLLOHOSP", "DRREDDY",
-    "DIVISLAB", "VEDL", "TRENT", "BEL", "HAL",
-    "DIXON", "POLYCAB", "PERSISTENT", "COFORGE", "KOTAKBANK"
-]
-
-def get_best_swing_stocks(
-    candidate_symbols: Optional[List[str]] = None,
-    limit: int = 25,
-    force_refresh: bool = False
-) -> Dict[str, Any]:
-    """
-    Ranks top NSE candidate stocks using the exact AI Swing Trading System v4.0.
-    Produces a composite Quantitative Alpha Score (0 - 100), categorization tiers,
-    concrete trade plans (Entry, Target, Stoploss, R/R), and bullish catalysts.
-    Helps traders instantly spot the highest-conviction swing trade opportunities.
-    """
-    global _BEST_STOCKS_CACHE
-    now = time.time()
-    if not force_refresh and _BEST_STOCKS_CACHE["data"] is not None and (now - _BEST_STOCKS_CACHE["timestamp"] < 600):
-        cached_list = _BEST_STOCKS_CACHE["data"]
-        return {
-            "status": "success",
-            "count": len(cached_list[:limit]),
-            "last_updated": datetime.datetime.fromtimestamp(_BEST_STOCKS_CACHE["timestamp"]).strftime("%Y-%m-%d %H:%M:%S"),
-            "stocks": cached_list[:limit]
-        }
-
-    symbols = candidate_symbols if (candidate_symbols and len(candidate_symbols) > 0) else DEFAULT_RADAR_CANDIDATES
-
-    results = []
-
-    def worker(sym: str):
-        try:
-            analysis = run_ai_swing_analysis(sym)
-            if not analysis:
-                return None
-
-            trade_plan = analysis.get("trade_plan", {})
-            indicators = analysis.get("indicators", {})
-            mtf = analysis.get("multi_timeframe", {})
-            backtest = analysis.get("backtest", {})
-            prob = float(analysis.get("ai_probability", 0.0))
-            buy_score = int(analysis.get("buy_score", 0))
-            rr = float(trade_plan.get("risk_reward", 0.0))
-            win_rate = float(backtest.get("win_rate_pct", 0.0))
-            st_bull = indicators.get("supertrend") == "BULLISH"
-            wk_bull = mtf.get("weekly_trend") == "BULLISH"
-            above_200 = bool(mtf.get("above_ema200", False))
-            rs = float(indicators.get("rs_vs_nifty_pct", 0.0))
-            rsi = float(indicators.get("rsi", 50.0))
-            vol_ratio = float(indicators.get("vol_ratio", 1.0))
-            signal = analysis.get("signal", "WAIT")
-
-            # Composite Quantitative Alpha Score (0 - 100)
-            pts_prob = (prob / 100.0) * 35.0
-            pts_rules = (buy_score / 8.0) * 25.0
-            pts_rr = min(20.0, (rr / 2.5) * 20.0)
-            pts_trend = (5.0 if st_bull else 0.0) + (5.0 if wk_bull else 0.0)
-            pts_edge = min(5.0, (win_rate / 75.0) * 5.0) + (5.0 if rs > 0 else 0.0)
-
-            alpha_score = round(min(100.0, max(0.0, pts_prob + pts_rules + pts_rr + pts_trend + pts_edge)), 1)
-
-            if signal == "STRONG BUY" or alpha_score >= 78.0:
-                tier = "TIER_1_PRIME"
-                tier_label = "👑 Prime Alpha (Strong Buy)"
-                tier_color = "var(--bullish-neon)"
-            elif signal == "BUY" or alpha_score >= 62.0:
-                tier = "TIER_2_CONVICTION"
-                tier_label = "⭐ High Conviction Swing"
-                tier_color = "#38bdf8"
-            elif alpha_score >= 48.0:
-                tier = "TIER_3_WATCHLIST"
-                tier_label = "🟡 Watchlist Setup"
-                tier_color = "#fbbf24"
-            else:
-                tier = "TIER_4_AVOID"
-                tier_label = "⚠️ Avoid / High Risk"
-                tier_color = "var(--bearish-neon)"
-
-            catalysts = []
-            if prob >= 60.0:
-                catalysts.append(f"AI Win Prob {prob:.1f}%")
-            if rr >= 1.8:
-                catalysts.append(f"R/R 1:{rr:.2f}")
-            if st_bull and wk_bull:
-                catalysts.append("Daily & Weekly Bullish")
-            elif st_bull:
-                catalysts.append("Supertrend Bullish")
-            if rs > 0:
-                catalysts.append(f"Outperforming NIFTY (+{rs:.1f}%)")
-            if vol_ratio >= 1.3:
-                catalysts.append(f"Volume Surge {vol_ratio:.1f}x")
-            if 45 <= rsi <= 68:
-                catalysts.append(f"RSI {rsi:.0f} Optimal")
-            if buy_score >= 5:
-                catalysts.append(f"{buy_score}/8 Checks Passed")
-
-            return {
-                "symbol": sym,
-                "price": analysis.get("current_price", 0.0),
-                "signal": signal,
-                "ai_probability": prob,
-                "alpha_score": alpha_score,
-                "alpha_tier": tier,
-                "alpha_tier_label": tier_label,
-                "alpha_tier_color": tier_color,
-                "buy_score": buy_score,
-                "entry_price": trade_plan.get("entry_price", analysis.get("current_price")),
-                "target_price": trade_plan.get("target_price"),
-                "target_pct": trade_plan.get("target_pct"),
-                "target_1": trade_plan.get("target_1", trade_plan.get("target_price")),
-                "target_2": trade_plan.get("target_2", trade_plan.get("target_price")),
-                "target_3": trade_plan.get("target_3"),
-                "stoploss_price": trade_plan.get("stoploss_price"),
-                "stoploss_pct": trade_plan.get("stoploss_pct"),
-                "risk_reward": rr,
-                "hold_period_days": trade_plan.get("hold_period_days", 5),
-                "win_rate_pct": win_rate,
-                "rsi": rsi,
-                "adx": indicators.get("adx"),
-                "supertrend": indicators.get("supertrend"),
-                "weekly_trend": mtf.get("weekly_trend"),
-                "above_ema200": above_200,
-                "rs_vs_nifty_pct": rs,
-                "vol_ratio": vol_ratio,
-                "catalysts": catalysts[:4]
-            }
-        except Exception as e:
-            logger.warning(f"Error scoring {sym}: {e}")
-            return None
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        futures = [executor.submit(worker, sym) for sym in symbols]
-        for f in concurrent.futures.as_completed(futures):
-            item = f.result()
-            if item:
-                results.append(item)
-
-    # Sort with AI PROBABILITY AT TOP (highest probability descending)
-    results.sort(key=lambda x: (x["ai_probability"], x["buy_score"]), reverse=True)
-
-    for idx, item in enumerate(results, 1):
-        item["rank"] = idx
-
-    _BEST_STOCKS_CACHE["data"] = results
-    _BEST_STOCKS_CACHE["timestamp"] = now
-
-    return {
-        "status": "success",
-        "count": len(results[:limit]),
-        "last_updated": datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
-        "stocks": results[:limit]
-    }

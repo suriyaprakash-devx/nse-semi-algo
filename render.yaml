@@ -15,10 +15,12 @@ services:
         fromDatabase:
           name: upstox-scanner-db
           property: connectionString
-      - key: ADMIN_USERNAME
-        value: "suriyaprakash"
-      - key: ADMIN_PASSWORD
-        value: "master730"
+      - key: UPSTOX_CLIENT_ID
+        sync: false
+      - key: UPSTOX_CLIENT_SECRET
+        sync: false
+      - key: UPSTOX_REDIRECT_URI
+        sync: false
       - key: FRONTEND_URL
         sync: false
       - key: ALLOWED_ORIGINS
@@ -43,11 +45,6 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: upstox-scanner-backend
-          property: host
-      - key: VITE_API_BASE_URL
         fromService:
           type: web
           name: upstox-scanner-backend

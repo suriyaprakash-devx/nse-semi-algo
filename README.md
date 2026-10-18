@@ -1,21 +1,8 @@
-# NSE Semi-Algo Quantitative Stock Terminal
+# Upstox Semi-Algo NSE Quantitative Stock Terminal
 
-A high-performance, institutional-grade quantitative stock scanner and decision support web application for NSE equities (**NIFTY 100 & NIFTY 200 universe**), powered exclusively by **Yahoo Finance (yfinance)**, **Real-Time Live Market Feed**, **FastAPI**, and **React + Vite**.
+A high-performance, institutional-grade quantitative stock scanner and decision support system for NSE equities (**NIFTY 100 & NIFTY 200 universe**), powered by the official **Upstox API v2**, **Real-Time Live Market Feed**, **FastAPI**, **React + Vite**, and **PostgreSQL**.
 
 > **Safety Notice**: This application is strictly an analytical scanner and decision support system. It **does NOT place automated buy or sell orders**.
-
----
-
-## Key Highlights
-
-- **Zero Upstox Dependency**: Completely decoupled from Upstox OAuth, API tokens, and developer portal logins.
-- **Yahoo Finance Engine**: All historical and live OHLCV data for NSE equities is fetched via `yfinance` in parallel asynchronous batches.
-- **Single-User Authentication**: Secure terminal access with username `suriyaprakash` and password `master730`.
-- **Streamlined Workflow**: Focused on 3 institutional high-conviction decision support modules:
-  1. **1️⃣ SMA 6 & 30 Confirmed Crossover Scanner**
-  2. **2️⃣ Algo Signals (AI Swing Trading System v4.0)**
-  3. **3️⃣ SMA Bullish AI Radar (AI Probability at Top)**
-- **Modern Responsive Web Terminal**: Production-ready Web Application (React 19 + Vite + Glassmorphic Obsidian/Crystal Theme) designed for seamless desktop and mobile web experiences.
 
 ---
 
@@ -24,11 +11,11 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
 ```
                       +-------------------------------------------------------+
                       |       React + Vite Frontend (Glassmorphic UI)         |
-                      |  - Slide 1: SMA 6 & 30 Crossover Scanner (yfinance)   |
-                      |  - Slide 2: Algo Signals (AI Swing Trading v4.0)      |
-                      |  - Slide 3: SMA Bullish AI Radar (AI Prob at Top)     |
-                      |  - Single User Auth (suriyaprakash / master730)        |
-                      |  - Desktop & Mobile Web Browser SPA                   |
+                      |  - Module 1: SMA 6 & 30 Crossover Scanner             |
+                      |  - Module 2: Fundamental Screener & Checklist         |
+                      |  - Module 3: 100-Point Stock Perfection Score         |
+                      |  - Module 4: High-Volume Breakout & Retest Algo       |
+                      |  - Real-Time WebSocket Telemetry & Live LTP Flashes   |
                       +---------------------------+---------------------------+
                                                   |
                                    HTTP / REST API & WebSocket (/ws/ticks)
@@ -36,30 +23,30 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
                                                   v
                       +-------------------------------------------------------+
                       |              Python FastAPI Backend Service           |
-                      |  - Single-User Credential Authentication & Sessions   |
-                      |  - Yahoo Finance (yfinance) Batch Equities Downloader |
+                      |  - Upstox OAuth 2.0 & Direct Token Session Flow       |
                       |  - Real-Time Live Market Quote Feed Engine            |
                       |  - Deduplicated NIFTY 100 + 200 Universe Engine       |
                       |  - SMA 6 & 30 Confirmed Crossover Engine              |
-                      |  - AI Swing v4.0 Multi-Threaded Alpha Radar Engine    |
+                      |  - Rate-Limited Async Concurrent Workers              |
                       +-------------+-----------------------+-----------------+
                                     |                       |
-                     SQLAlchemy ORM |                       | yfinance / Yahoo Chart API
+                     SQLAlchemy ORM |                       | Upstox API v2 / Live Feed
                                     v                       v
                    +----------------+----+     +------------+--------------------+
                    | PostgreSQL / SQLite |     | Real-Time Market APIs           |
-                   | - scan_runs         |     | - Yahoo Finance (yfinance)      |
-                   | - scan_results      |     | - Real-Time NSE Chart v8 Feed   |
-                   | - oauth_sessions    |     | - Real-Time Tick WebSocket Feed |
-                   +---------------------+     +---------------------------------+
+                   | - scan_runs         |     | - Upstox NSE Instrument Master  |
+                   | - scan_results      |     | - Upstox Historical Daily OHLCV |
+                   | - oauth_sessions    |     | - Live Market Chart / Quote API |
+                   +---------------------+     | - Real-Time Tick WebSocket Feed |
+                                               +---------------------------------+
 ```
 
 ---
 
-## 3 Core Quantitative Modules
+## 4 Core Quantitative Modules
 
 ### 1️⃣ SMA 6 & 30 Crossover Scanner
-- **Powered by yfinance**: Downloads 6-month historical OHLCV data directly in concurrent batches of 25 equities with automatic individual fallbacks.
+- **Dual Engine Architecture**: Runs via official **Upstox API v2** when authenticated, and gracefully falls back to the **Real-Time Live Market Feed** if no Upstox token is present.
 - **Accurate Current Day Candle**: Automatically synthesizes and appends today's current daily candle (LTP, Open, High, Low, Volume) so moving averages reflect active market conditions.
 - **Confirmed Crossover Logic**:
   - **BULLISH Golden Cross**: Previous Bar `SMA 6 <= SMA 30` **AND** Current Bar `SMA 6 > SMA 30`. Verified active only if current `SMA 6 >= SMA 30` (prevents invalidated trend reversals).
@@ -67,75 +54,147 @@ A high-performance, institutional-grade quantitative stock scanner and decision 
 - **True Live Metrics**:
   - Reports current live price (`Close` / LTP), `Crossover Price` (historical price at trigger), current `SMA 6`, current `SMA 30`, and `Spread %`.
   - Flags freshness: `FRESH` (≤ 1 day), `RECENT` (2–5 days), or `ACTIVE` (≤ 25 days).
-- **Ranking & Export**: Chronologically ranks signals (`crossover_date DESC`), assign ranks 1..N, with single-click CSV export (`nse_sma_scan_YYYY-MM-DD.csv`).
-- **Direct Drill-down**: Click any stock to view crossover breakdown, jump directly to AI Swing Trading Model v4.0, or view the live TradingView chart.
+- **Ranking & Export**: Chronologically ranks signals (`crossover_date DESC`), assign ranks 1..N, with single-click CSV export.
 
-### 2️⃣ Algo Signals (AI Swing Trading System v4.0)
-- **Probabilistic Machine Learning Engine**: TimeSeriesSplit (5 folds) XGBoost classifier combined with Supertrend and Relative Strength vs NIFTY 50.
-- **21 Engineered Features**: Normalized EMA distances (20/50/200), MACD, MACDH, ADX (+DI / -DI), ATR, Bollinger Band Width & Position, Stochastics, Volume Surge Ratio, Momentum (5d/20d), and Supertrend.
-- **Walk-Forward Validation**: Simulates out-of-sample trades on the last 20% of data to report real win rate, profit factor, average profit, and maximum drawdown.
-- **Interactive Tooling**:
-  - Live SVG Candlestick & EMA 20/50 chart with crosshair tooltips.
-  - Interactive cumulative return equity curve.
-  - Dynamic Position Sizing & Capital Allocator calculator (customizable portfolio size & risk % per trade).
+### 2️⃣ Fundamental Screener & Double Confirmation
+- Comprehensive valuation and balance sheet metrics: Trailing P/E, P/B, EPS, ROE, Debt-to-Equity, Market Cap, 52-Week Range.
+- Automated Pros & Cons breakdown (e.g., low debt, strong ROE, healthy earnings).
+- **Double Confirmation Verdict**: Synthesizes the technical SMA crossover trend with fundamental health for high-conviction decision making.
 
-### 3️⃣ Best Stocks Radar (Top Swing Alpha Screener)
-- **Market-Wide Automated Screening**: Continuously evaluates top liquid NSE candidates through the exact v4.0 quantitative rules and ranks them using an institutional 0-100 **Alpha Score**.
-- **Alpha Tiers**:
-  - `👑 Prime Alpha` (Score ≥ 75 or Strong Buy)
-  - `⭐ High Conviction` (Passed core AI & confirmation rules)
-  - `🟡 Watchlist Setup` (Developing setups near trigger)
-  - `⚠️ Avoid` (High risk or negative momentum)
-- **Immediate Actionability**:
-  - Exact Entry, Stoploss (1.5x ATR), Target 1 (3.0x ATR), Target 2 (4.5x ATR), and Risk/Reward ratio.
-  - Expected holding period (3 to 8 trading days based on ADX trend strength).
-  - Bullish catalyst breakdown (e.g. Volume surge, Supertrend bullish, Outperforming NIFTY 50).
-  - Single-click CSV export (`nse_best_swing_stocks_YYYY-MM-DD.csv`).
-  - Seamless jump into Slide 2 to inspect full model breakdown.
+### 3️⃣ 100-Point Stock Perfection Quant Score
+- Composite algorithmic rating score (0 to 100):
+  - Valuation Health (P/E relative to sector, P/B)
+  - Profitability & Returns (ROE, ROCE)
+  - Balance Sheet Solvency (Debt-to-Equity, leverage safety)
+  - Technical Trend Momentum (SMA 6 & 30 alignment and spread)
+- High-speed leaderboard with instant sorting and filtering.
 
----
-
-## Authentication
-
-The terminal uses single-user authentication:
-- **Username**: `suriyaprakash`
-- **Password**: `master730`
-
-Authentication tokens are validated locally and stored in encrypted local storage (`sma_auth_token`), automatically attached via `Authorization: Bearer <token>` to all HTTP requests on web and native mobile platforms.
+### 4️⃣ High-Volume Breakout & Retest Algo Signals
+- **Volume Expansion**: Filters for candles with volume expansion (`≥ 2.0x`, `≥ 2.5x`, or `≥ 3.0x` 20-day average volume).
+- **Resistance Breakout**: Bullish candle closing cleanly above the previous 20-day high (`Close > prevHigh`).
+- **Breakdown Protection**: Rejects failed breakouts where subsequent candles crashed below the breakout candle's low.
+- **Retest Zone Defense**: Identifies pullbacks defending the breakout support zone:
+  - Midpoint Demand Level: `(cand.high + cand.low) / 2`
+  - Breakout Resistance Level: `prevHigh`
+  - Configurable tolerance presets: `±1.5% (Strict)`, `±2.5% (Standard)`, `±4.0% (Broad)`.
+- **Live WebSocket Telemetry**: Streams real-time market prices, dynamically updating distance from midpoint and trigger status with green/red price flash animations.
 
 ---
 
-## Building & Running
+## Real-Time Live Data Architecture
 
-### 1. Backend Service (FastAPI)
-```bash
-# Start backend server directly (Recommended)
-python -m uvicorn backend.main:app --reload --port 8000
+| Feature | Primary Provider | Fallback Provider | Real-Time Cadence |
+|---|---|---|---|
+| **Daily Historical Candles** | Upstox API v2 (`historical-candle`) | Authenticated NSE Master Cache | Static + Daily sync |
+| **Current Day Candle** | Upstox 1m Intraday / Quotes OHLC | Real-Time NSE Chart v8 Feed | On-demand scan execution |
+| **Live LTP & Price Ticks** | Upstox Market Quotes API | Real-Time Async Feed (`backend/live_feed.py`) | Every 2.5s WebSocket broadcast |
+| **Company Fundamentals** | Yahoo Finance / Screener Engine | Offline Pre-warmed Fundamental DB | Cached with 1h TTL |
 
-# Or using a virtual environment (Optional)
-# python -m venv venv
-# .\venv\Scripts\activate      # Windows (or: source venv/bin/activate on Linux/Mac)
-# pip install -r requirements.txt
-# python -m uvicorn backend.main:app --reload --port 8000
+---
+
+## Project Structure
+
 ```
-Interactive API documentation is available at `http://localhost:8000/docs`.
+.
+├── backend/
+│   ├── main.py            # FastAPI application, REST endpoints, and WebSocket (/ws/ticks)
+│   ├── live_feed.py       # High-speed asynchronous real-time market quote engine
+│   ├── scanner.py         # SMA 6 & 30 crossover detection, invalidation checks, and ranking
+│   ├── universe.py        # NIFTY 100 + 200 constituents loader and Upstox instrument mapper
+│   ├── upstox_client.py   # Upstox SDK & REST client with rate limits and live candle integration
+│   ├── analyzer.py        # Fundamental analysis engine and 100-point quant scoring
+│   ├── auth.py            # Upstox OAuth 2.0 authorization & token encryption
+│   ├── config.py          # Pydantic Settings
+│   ├── database.py        # SQLAlchemy engine (Postgres / SQLite)
+│   └── models.py          # scan_runs, scan_results, oauth_sessions
+├── data/
+│   ├── build_scanner_cache.py         # Script to download authentic 6-month NSE daily candles
+│   ├── build_fundamentals.py          # Script to prewarm fundamental dataset
+│   ├── nse_fundamentals_database.json # Offline fundamental records for NIFTY universe
+│   └── scanner_data_cache.json        # Authentic 6-month daily candle cache for top NSE stocks
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx        # React Dashboard (Scanner, Screener, Perfection Score)
+│   │   ├── App.css        # Obsidian Glass styling, ambient glow, and responsive layout
+│   │   ├── AlgoSignals.jsx# High-Volume Breakout & Retest Terminal & Anatomy Inspector
+│   │   ├── AlgoSignals.css# Algo signals styling, sparklines, and live telemetry badges
+│   │   ├── index.css      # Design tokens, color system, and glassmorphism utilities
+│   │   └── main.jsx       # React DOM entry point
+│   ├── package.json       # Frontend scripts and dependencies
+│   └── vite.config.js     # Vite configuration with API & WebSocket reverse proxy
+├── Dockerfile             # Multi-stage production container build (Vite + FastAPI SPA)
+├── docker-compose.yml     # Local/Production Docker Compose service definition
+├── .env.example           # Environment variable template
+├── render.yaml            # Render Blueprint deployment specification
+├── requirements.txt       # Python backend dependencies
+└── README.md              # Project documentation
+```
 
-### 2. Frontend Web Application
+---
+
+## Local Development Setup
+
+### 1. Prerequisites
+- Python 3.10+
+- Node.js 18+ and npm
+
+### 2. Environment Configuration
+Create a `.env` file in the project root:
+```env
+# Upstox Developer API (Optional for Live Market Feed mode, required for official Upstox trading)
+UPSTOX_CLIENT_ID=your_upstox_client_id
+UPSTOX_CLIENT_SECRET=your_upstox_client_secret
+UPSTOX_REDIRECT_URI=http://localhost:8000/api/auth/callback
+
+# Database & Ports
+DATABASE_URL=sqlite:///./scanner.db
+FRONTEND_URL=http://localhost:5173
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173
+SESSION_SECRET_KEY=dev-secret-key-change-in-production-1234567890
+
+# Scanner Settings
+DELETE_RESULTS_AFTER_SCAN=false
+SCAN_CONCURRENCY=8
+INCLUDE_CURRENT_DAY_CANDLE=true
+```
+
+### 3. Run Backend (FastAPI)
+```bash
+# Activate virtual environment
+# Windows:
+.\venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Start backend server
+uvicorn backend.main:app --reload --port 8000
+```
+API Documentation will be available at: `http://localhost:8000/docs`
+
+### 4. Run Frontend (React + Vite)
 ```bash
 cd frontend
 npm install
-npm run build      # Compiles production web bundle to frontend/dist
-npm run dev        # Starts Vite local development server
+npm run dev
 ```
+Open `http://localhost:5173` in your browser.
 
-Access the web application at `http://localhost:5173` on desktop or mobile browser.
+---
 
-### 3. Standalone AI Swing Trading System v4.0 Script
-You can also run the exact, untouched Python CLI script directly:
-```bash
-python ai_swing_v4.py
-# Enter NSE Symbol when prompted: RELIANCE, TCS, INFY, etc.
-```
+## Production Deployment (Render)
+
+This repository includes a `render.yaml` Blueprint configured to deploy:
+1. **Python FastAPI Backend Web Service**: Auto-detects port, serves endpoints and WebSockets.
+2. **React Static Site**: Compiles frontend assets with SPA routing.
+3. **Managed PostgreSQL**: Automatically stores encrypted OAuth sessions and historical scans.
+
+To deploy:
+1. Connect this GitHub repository to [Render](https://render.com/).
+2. Create a **New Blueprint Instance** and select the repository.
+3. Set your `UPSTOX_CLIENT_ID` and `UPSTOX_CLIENT_SECRET` in the Render dashboard.
 
 ---
 
@@ -144,14 +203,15 @@ python ai_swing_v4.py
 | Endpoint | Method | Description |
 |---|---|---|
 | `/health` | GET | Health check and system uptime |
-| `/api/auth/login` | POST | Single-user authentication (`suriyaprakash` / `master730`) |
-| `/api/auth/status` | GET | Current session validation status |
-| `/api/auth/logout` | POST | Terminate session |
-| `/api/scanner/run` | POST | Triggers NIFTY 100/200 SMA 6 & 30 crossover scan via `yfinance` |
+| `/api/algo/swing-analysis/{symbol}` | GET | Executes AI Swing Trading System v4.0 (XGBoost, Walk-Forward, ATR Plan, 8 Pillars) |
+| `/api/algo/swing-analysis` | POST | Batch/custom symbol AI Swing Trading analysis |
+| `/api/scanner/run` | POST | Triggers NIFTY 100/200 SMA 6 & 30 crossover scan |
 | `/api/scanner/status` | GET | Real-time scan progress (`stocks_scanned / total_stocks`) |
 | `/api/scanner/results` | GET | Returns ranked list of confirmed crossovers |
-| `/api/algo/swing-analysis/{symbol}` | GET | Executes AI Swing Trading System v4.0 |
-| `/api/ohlc-snapshot` | GET | Real-time live OHLC snapshot for requested symbols |
+| `/api/analysis/{symbol}` | GET | Screener fundamentals & double confirmation checklist |
+| `/api/scoring/leaderboard` | GET | 100-Point Stock Perfection Score leaderboard |
+| `/api/scanner-data` | GET | Dataset of daily candles for Breakout & Retest scanner |
+| `/api/ohlc-snapshot` | GET | Real-time live OHLC snapshot for requested symbols/tokens |
 | `/ws/ticks` | WebSocket | Real-time tick stream for subscribed instruments |
 
 ---

@@ -3,25 +3,7 @@ import io
 import logging
 from typing import Dict, List, Optional, Set, Tuple
 import httpx
-SYMBOL_OVERRIDES = {
-    "M&M": "M&M.NS",
-    "BAJAJ-AUTO": "BAJAJ-AUTO.NS",
-    "L&TFH": "LTF.NS",
-    "MCDOWELL-N": "UNITDSPR.NS",
-    "NAM-INDIA": "NAM-INDIA.NS",
-    "TATACONSUM": "TATACONSUM.NS",
-    "TATAMOTORS": "TMCV.NS",
-    "TMCV": "TMCV.NS",
-    "TMPV": "TMPV.NS",
-    "LTIM": "LTIM.NS"
-}
-
-def get_yahoo_ticker(symbol: str) -> str:
-    clean = symbol.strip().upper()
-    if clean in SYMBOL_OVERRIDES:
-        return SYMBOL_OVERRIDES[clean]
-    clean_mapped = clean.replace("&", "_")
-    return f"{clean_mapped}.NS" if not clean_mapped.endswith(".NS") else clean_mapped
+from backend.upstox_client import upstox_client_manager
 
 logger = logging.getLogger(__name__)
 
@@ -207,16 +189,27 @@ async def get_combined_stock_universe() -> List[Dict[str, str]]:
 
     logger.info(f"Merged NIFTY 100 + 200: {len(unique_constituents)} unique stock symbols.")
 
-    # 3. Construct universe with Yahoo Finance tickers
-    final_universe: List[Dict[str, str]] = []
-    for sym, comp, isin in unique_constituents:
-        final_universe.append({
-            "symbol": sym,
-            "company": comp,
-            "yahoo_symbol": get_yahoo_ticker(sym),
-            "instrument_key": f"NSE_EQ|{sym}",
-            "isin": isin
-        })
+    # 3. Load Upstox NSE instrument master
+    await upstox_client_manager.get_nse_instruments()
 
-    logger.info(f"Final stock universe ready: {len(final_universe)} NSE equities for yfinance.")
+    # 4. Map symbols -> Upstox instrument_key and metadata
+    final_universe: List[Dict[str, str]] = []
+    unmapped_symbols: List[str] = []
+
+    for sym, comp, isin in unique_constituents:
+        instrument = upstox_client_manager.map_symbol_to_instrument(sym, isin)
+        if instrument:
+            final_universe.append({
+                "symbol": instrument["symbol"],
+                "company": instrument.get("company") or comp,
+                "instrument_key": instrument["instrument_key"],
+                "isin": instrument.get("isin") or isin
+            })
+        else:
+            unmapped_symbols.append(sym)
+
+    if unmapped_symbols:
+        logger.warning(f"Could not map {len(unmapped_symbols)} symbols to Upstox NSE_EQ instruments: {unmapped_symbols[:10]}...")
+
+    logger.info(f"Final stock universe ready: {len(final_universe)} valid Upstox NSE equities.")
     return final_universe

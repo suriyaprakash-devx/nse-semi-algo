@@ -1149,9 +1149,7 @@
   flex-wrap: wrap;
   gap: 12px;
   padding: 10px 14px;
-  background: var(--bg-surface-card);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(15, 23, 42, 0.7);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
 }
@@ -1235,7 +1233,7 @@
 .chart-mode-toggles {
   display: flex;
   gap: 4px;
-  background: var(--bg-surface-highest);
+  background: rgba(0, 0, 0, 0.35);
   padding: 3px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--border-subtle);
@@ -1262,14 +1260,11 @@
 .svg-container {
   width: 100%;
   position: relative;
-  background: var(--bg-surface-card);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(10, 15, 26, 0.75);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  box-shadow: var(--shadow-card);
-  touch-action: pan-y;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 
 .interactive-candle-svg {
@@ -1280,7 +1275,7 @@
 
 .svg-axis-label {
   font-size: 10px;
-  fill: var(--text-faint);
+  fill: #64748b;
   dominant-baseline: middle;
 }
 
@@ -1297,11 +1292,11 @@
 /* ========================================================================= */
 .calc-drawer-wrapper {
   margin-top: 14px;
-  background: var(--bg-surface-card);
-  border: 1px solid rgba(0, 210, 255, 0.22);
+  background: rgba(0, 210, 255, 0.03);
+  border: 1px solid rgba(0, 210, 255, 0.18);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  box-shadow: var(--shadow-card);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
 .calc-trigger-bar {
@@ -1310,15 +1305,14 @@
   justify-content: space-between;
   align-items: center;
   cursor: pointer;
-  background: var(--bg-surface-high);
+  background: rgba(15, 23, 42, 0.5);
   transition: background 0.2s;
   flex-wrap: wrap;
   gap: 8px;
-  user-select: none;
 }
 
 .calc-trigger-bar:hover {
-  background: var(--bg-surface-card-hover);
+  background: rgba(0, 210, 255, 0.08);
 }
 
 .calc-title {
@@ -1338,6 +1332,7 @@
   color: var(--accent-cyan);
   font-size: 0.74rem;
   font-weight: 600;
+  cursor: pointer;
 }
 
 .calc-content-panel {
@@ -1345,8 +1340,8 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-surface-card);
+  border-top: 1px solid rgba(0, 210, 255, 0.12);
+  background: rgba(10, 15, 26, 0.4);
 }
 
 .calc-inputs-row {
@@ -1371,17 +1366,12 @@
 }
 
 .calc-input {
-  background: var(--bg-input);
+  background: rgba(15, 23, 42, 0.8);
   border: 1px solid var(--border-medium);
   border-radius: var(--radius-xs);
   padding: 6px 10px;
   color: var(--text-main);
   font-size: 0.85rem;
-}
-
-.calc-input:focus {
-  outline: none;
-  border-color: var(--accent-cyan);
 }
 
 .calc-range-row {
@@ -1410,7 +1400,7 @@
 }
 
 .calc-res-card {
-  background: var(--bg-surface-high);
+  background: rgba(15, 23, 42, 0.65);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
   padding: 10px 12px;
@@ -1444,14 +1434,11 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: var(--bg-surface-card);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(15, 23, 42, 0.55);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 12px 14px;
   margin-top: 14px;
-  box-shadow: var(--shadow-card);
 }
 
 .equity-header {
@@ -1476,7 +1463,6 @@
 .equity-svg-wrap {
   position: relative;
   width: 100%;
-  touch-action: pan-y;
 }
 
 .equity-svg {
@@ -1490,18 +1476,17 @@
   top: 6px;
   right: 12px;
   font-size: 0.72rem;
-  background: var(--bg-surface-modal);
+  background: rgba(15, 23, 42, 0.9);
   border: 1px solid var(--border-medium);
-  color: var(--text-main);
   padding: 3px 9px;
   border-radius: 4px;
-  box-shadow: var(--shadow-elevated);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
 .checklist-filter-pills, .trade-filter-pills {
   display: flex;
   gap: 4px;
-  background: var(--bg-surface-highest);
+  background: rgba(0, 0, 0, 0.35);
   padding: 2px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--border-subtle);
@@ -1520,10 +1505,9 @@
 }
 
 .filter-pill.active {
-  background: var(--bg-surface-card);
+  background: var(--bg-surface-highest);
   color: var(--accent-cyan);
   font-weight: 700;
-  border: 1px solid var(--border-subtle);
 }
 
 .trades-table-header {
@@ -1555,23 +1539,4 @@
   background: rgba(0, 210, 255, 0.12) !important;
   color: var(--accent-cyan) !important;
   border-color: rgba(0, 210, 255, 0.3) !important;
-}
-
-/* Light Theme Overrides */
-[data-theme="light"] .chip-recent {
-  background: rgba(15, 23, 42, 0.04) !important;
-  color: var(--text-sub) !important;
-  border-color: rgba(15, 23, 42, 0.1) !important;
-}
-
-[data-theme="light"] .calc-drawer-wrapper {
-  border-color: rgba(0, 160, 220, 0.35);
-}
-
-[data-theme="light"] .dot-ema20 {
-  background: #d97706;
-}
-
-[data-theme="light"] .dot-ema50 {
-  background: #7c3aed;
 }

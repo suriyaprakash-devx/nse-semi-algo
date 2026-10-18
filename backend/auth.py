@@ -1,19 +1,25 @@
 import logging
-import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Tuple
+import httpx
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from backend.config import settings
+from backend.config import settings, get_fernet_cipher, reload_settings
 from backend.database import get_db
 from backend.models import OAuthSession
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
-SESSION_COOKIE_NAME = "sma_session_id"
+UPSTOX_AUTH_URL = "https://api.upstox.com/v2/login/authorization/dialog"
+UPSTOX_TOKEN_URL = "https://api.upstox.com/v2/login/authorization/token"
+UPSTOX_USER_PROFILE_URL = "https://api.upstox.com/v2/user/profile"
+UPSTOX_LOGOUT_URL = "https://api.upstox.com/v2/logout"
+
+SESSION_COOKIE_NAME = "upstox_session_id"
 
 def is_expired(dt: Optional[datetime]) -> bool:
     if not dt:
@@ -21,6 +27,21 @@ def is_expired(dt: Optional[datetime]) -> bool:
     if dt.tzinfo is not None:
         return dt < datetime.now(timezone.utc)
     return dt < datetime.now(timezone.utc).replace(tzinfo=None)
+
+def is_valid_future(dt: Optional[datetime]) -> bool:
+    if not dt:
+        return False
+    if dt.tzinfo is not None:
+        return dt > datetime.now(timezone.utc)
+    return dt > datetime.now(timezone.utc).replace(tzinfo=None)
+
+def encrypt_token(plain_token: str) -> str:
+    cipher = get_fernet_cipher()
+    return cipher.encrypt(plain_token.encode()).decode()
+
+def decrypt_token(encrypted_token: str) -> str:
+    cipher = get_fernet_cipher()
+    return cipher.decrypt(encrypted_token.encode()).decode()
 
 def get_session_id_from_request(request: Request) -> Optional[str]:
     # 1. Check HTTP-only cookie
@@ -34,9 +55,8 @@ def get_session_id_from_request(request: Request) -> Optional[str]:
     # 3. Check Authorization Bearer header
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        return auth_header.split(" ")[1].strip()
-    # 4. Check query param if provided
-    return request.query_params.get("session_id")
+        return auth_header.split(" ")[1]
+    return None
 
 def get_current_session(
     request: Request,
@@ -44,28 +64,36 @@ def get_current_session(
 ) -> OAuthSession:
     session_id = get_session_id_from_request(request)
     if not session_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Please log in."
-        )
+        # Also check query param if testing
+        session_id = request.query_params.get("session_id")
 
-    session = db.query(OAuthSession).filter(
-        OAuthSession.id == session_id,
-        OAuthSession.is_active == True
-    ).first()
+    # If no session specified, pick latest active session (useful for single-user semi-algo deployment)
+    session = None
+    if session_id:
+        session = db.query(OAuthSession).filter(
+            OAuthSession.id == session_id,
+            OAuthSession.is_active == True
+        ).first()
+
+    if not session:
+        # Fallback to the most recent active session in the database
+        session = db.query(OAuthSession).filter(
+            OAuthSession.is_active == True
+        ).order_by(OAuthSession.created_at.desc()).first()
 
     if not session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session invalid or expired. Please log in again."
+            detail="Upstox authentication expired or not connected. Please connect your Upstox account."
         )
 
+    # Check if expired
     if is_expired(session.expires_at):
         session.is_active = False
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired. Please log in again."
+            detail="Upstox authentication expired. Please reconnect your Upstox account."
         )
 
     return session
@@ -80,48 +108,127 @@ def get_current_session_optional(
         return None
 
 def get_active_access_token(session: OAuthSession) -> str:
-    return session.encrypted_access_token or ""
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-@router.post("/login")
-def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)):
-    """
-    Single username & password login for the terminal:
-    Username: suriyaprakash
-    Password: master730
-    """
-    clean_user = payload.username.strip().lower()
-    raw_pass = payload.password.strip()
-
-    expected_user = settings.ADMIN_USERNAME.strip().lower()
-    expected_pass = settings.ADMIN_PASSWORD.strip()
-
-    if clean_user != expected_user or raw_pass != expected_pass:
-        logger.warning(f"Failed login attempt for user: '{clean_user}'")
+    try:
+        return decrypt_token(session.encrypted_access_token)
+    except Exception as e:
+        logger.error(f"Failed to decrypt Upstox access token: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password. Please verify your credentials."
+            detail="Failed to decrypt token. Please reconnect your Upstox account."
         )
 
-    # Invalidate old sessions for this user
-    db.query(OAuthSession).filter(
-        OAuthSession.user_id == settings.ADMIN_USERNAME,
-        OAuthSession.is_active == True
-    ).update({"is_active": False})
+@router.get("/login")
+def login(request: Request):
+    """
+    Initiates Upstox OAuth 2.0 flow.
+    Returns auth_url or redirects directly if accessed via browser.
+    """
+    current_settings = settings
+    if not current_settings.UPSTOX_CLIENT_ID or current_settings.UPSTOX_CLIENT_ID.startswith("paste_"):
+        current_settings = reload_settings()
 
-    # Create new session valid for 30 days
-    session_id = str(uuid.uuid4())
-    expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    if not current_settings.UPSTOX_CLIENT_ID or current_settings.UPSTOX_CLIENT_ID.startswith("paste_"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="UPSTOX_CLIENT_ID is not configured in .env file. Please paste your Upstox API Key / Client ID into .env and save."
+        )
+
+    auth_url = (
+        f"{UPSTOX_AUTH_URL}?"
+        f"response_type=code&"
+        f"client_id={current_settings.UPSTOX_CLIENT_ID}&"
+        f"redirect_uri={current_settings.UPSTOX_REDIRECT_URI}"
+    )
+
+    # Check if the client requested JSON or is navigating directly
+    accept_header = request.headers.get("accept", "")
+    if "text/html" in accept_header and not "application/json" in accept_header:
+        return RedirectResponse(url=auth_url)
+
+    return {"auth_url": auth_url}
+
+@router.get("/callback")
+async def oauth_callback(
+    code: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Handles Upstox OAuth redirect with authorization code, exchanges it for access token,
+    encrypts and saves the session, and redirects to frontend.
+    """
+    current_settings = settings
+    if not current_settings.UPSTOX_CLIENT_ID or current_settings.UPSTOX_CLIENT_ID.startswith("paste_"):
+        current_settings = reload_settings()
+
+    frontend_base = current_settings.FRONTEND_URL.rstrip("/")
+
+    if error:
+        logger.error(f"Upstox OAuth error returned: {error} - {error_description}")
+        return RedirectResponse(
+            url=f"{frontend_base}/?auth_error={error}&error_desc={error_description or 'Authorization denied'}"
+        )
+
+    if not code:
+        logger.error("No authorization code provided in Upstox callback")
+        return RedirectResponse(
+            url=f"{frontend_base}/?auth_error=missing_code&error_desc=No+authorization+code+received"
+        )
+
+    # Exchange code for access token with Upstox API
+    payload = {
+        "code": code,
+        "client_id": current_settings.UPSTOX_CLIENT_ID,
+        "client_secret": current_settings.UPSTOX_CLIENT_SECRET,
+        "redirect_uri": current_settings.UPSTOX_REDIRECT_URI,
+        "grant_type": "authorization_code"
+    }
+    headers = {
+        "accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(UPSTOX_TOKEN_URL, data=payload, headers=headers)
+            if resp.status_code != 200:
+                logger.error(f"Upstox token exchange failed ({resp.status_code}): {resp.text}")
+                return RedirectResponse(
+                    url=f"{frontend_base}/?auth_error=token_exchange_failed&details={resp.text[:100]}"
+                )
+            data = resp.json()
+    except Exception as e:
+        logger.error(f"Exception during Upstox token exchange: {e}")
+        return RedirectResponse(
+            url=f"{frontend_base}/?auth_error=network_error&details={str(e)[:100]}"
+        )
+
+    access_token = data.get("access_token")
+    user_id = data.get("user_id", "UNKNOWN")
+    user_name = data.get("user_name", "")
+    email = data.get("email", "")
+
+    if not access_token:
+        logger.error(f"Upstox response did not contain access_token: {data}")
+        return RedirectResponse(
+            url=f"{frontend_base}/?auth_error=invalid_token_response"
+        )
+
+    # Encrypt access token before persistent storage
+    encrypted_token = encrypt_token(access_token)
+
+    # Invalidate previous active sessions for this user (or all if single-algo deployment)
+    db.query(OAuthSession).filter(OAuthSession.is_active == True).update({"is_active": False})
+
+    # Upstox access tokens are valid for 1 day (or until 3:30 AM IST next day)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
 
     new_session = OAuthSession(
-        id=session_id,
-        user_id=settings.ADMIN_USERNAME,
-        user_name=settings.ADMIN_USERNAME,
-        email="suriyaprakash@terminal.local",
-        encrypted_access_token="session_token_" + session_id,
+        user_id=user_id,
+        user_name=user_name,
+        email=email,
+        encrypted_access_token=encrypted_token,
         is_active=True,
         expires_at=expires_at
     )
@@ -129,59 +236,204 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
     db.commit()
     db.refresh(new_session)
 
-    # Set secure cookie
+    # Redirect to frontend dashboard with session indicator
+    redirect_target = f"{frontend_base}/?auth=success&session_id={new_session.id}"
+    response = RedirectResponse(url=redirect_target)
+
+    # Set secure HTTP-only cookie
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
-        value=session_id,
-        max_age=30 * 86400,
+        value=new_session.id,
+        max_age=86400,
+        httponly=True,
+        samesite="lax",
+        secure=settings.DATABASE_URL.startswith("postgresql")  # True in Render production HTTPS
+    )
+    return response
+
+class DirectTokenInput(BaseModel):
+    access_token: str
+
+@router.post("/token")
+async def save_direct_token(
+    payload: DirectTokenInput,
+    response: Response,
+    db: Session = Depends(get_db)
+):
+    """
+    Allows user to provide their Upstox access token directly from the UI.
+    Verifies the token with Upstox API, extracts user profile, encrypts the token,
+    and sets an active authenticated session.
+    """
+    raw_token = payload.access_token.strip()
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Access token cannot be empty."
+        )
+
+    # Clean token if user accidentally pasted 'Bearer ' prefix
+    if raw_token.lower().startswith("bearer "):
+        raw_token = raw_token[7:].strip()
+
+    # Verify token with official Upstox user profile endpoint
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                UPSTOX_USER_PROFILE_URL,
+                headers={"Authorization": f"Bearer {raw_token}", "accept": "application/json"}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Upstox direct token verification failed ({resp.status_code}): {resp.text}")
+                detail_msg = "Invalid or expired Upstox access token."
+                try:
+                    err_json = resp.json()
+                    errors = err_json.get("errors", [])
+                    if errors and "message" in errors[0]:
+                        detail_msg += f" Upstox error: {errors[0]['message']}"
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=detail_msg
+                )
+            profile_data = resp.json().get("data", {})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error connecting to Upstox API for token verification: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to verify token with Upstox API: {str(e)}"
+        )
+
+    user_id = profile_data.get("user_id") or "UPSTOX_USER"
+    user_name = profile_data.get("user_name") or "Upstox User"
+    email = profile_data.get("email") or ""
+
+    # Encrypt access token before storing in database
+    encrypted_token = encrypt_token(raw_token)
+
+    # Invalidate previous active sessions
+    db.query(OAuthSession).filter(OAuthSession.is_active == True).update({"is_active": False})
+
+    # Set expiry to 24 hours from now
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+
+    new_session = OAuthSession(
+        user_id=user_id,
+        user_name=user_name,
+        email=email,
+        encrypted_access_token=encrypted_token,
+        is_active=True,
+        expires_at=expires_at
+    )
+    db.add(new_session)
+    db.commit()
+    db.refresh(new_session)
+
+    # Set secure HTTP-only cookie
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=new_session.id,
+        max_age=86400,
         httponly=True,
         samesite="lax",
         secure=settings.DATABASE_URL.startswith("postgresql")
     )
 
-    logger.info(f"User {settings.ADMIN_USERNAME} logged in successfully. Session created.")
-
     return {
         "authenticated": True,
-        "token": session_id,
-        "session_id": session_id,
-        "user_id": settings.ADMIN_USERNAME,
-        "user_name": settings.ADMIN_USERNAME,
-        "expires_at": expires_at.isoformat(),
-        "message": f"Welcome back, {settings.ADMIN_USERNAME}!"
+        "session_id": new_session.id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "email": email,
+        "message": f"Connected to Upstox successfully as {user_name} ({user_id})!"
     }
 
 @router.get("/status")
-@router.get("/me")
-def auth_status(request: Request, db: Session = Depends(get_db)):
+async def auth_status(request: Request, db: Session = Depends(get_db)):
     """
-    Returns current login status and user identity.
+    Checks if a valid Upstox session exists and verifies it against Upstox profile endpoint.
+    Never returns the raw access token.
     """
-    session = get_current_session_optional(request, db)
-    if session:
-        return {
-            "authenticated": True,
-            "configured": True,
-            "session_id": session.id,
-            "user_id": session.user_id,
-            "user_name": session.user_name,
-            "email": session.email,
-            "expires_at": session.expires_at.isoformat() if session.expires_at else None
-        }
+    session = None
+    try:
+        session = get_current_session(request, db)
+    except HTTPException:
+        pass
 
+    if session:
+        # Verify token validity with Upstox API
+        try:
+            token = get_active_access_token(session)
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    UPSTOX_USER_PROFILE_URL,
+                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"}
+                )
+                if resp.status_code == 200:
+                    profile_data = resp.json().get("data", {})
+                    return {
+                        "authenticated": True,
+                        "configured": True,
+                        "session_id": session.id,
+                        "user_id": profile_data.get("user_id") or session.user_id,
+                        "user_name": profile_data.get("user_name") or session.user_name,
+                        "email": profile_data.get("email") or session.email,
+                        "broker": profile_data.get("broker", "UPSTOX"),
+                        "expires_at": session.expires_at.isoformat() if session.expires_at else None
+                    }
+                else:
+                    session.is_active = False
+                    db.commit()
+        except Exception as e:
+            logger.warning(f"Error checking Upstox profile: {e}")
+            if is_valid_future(session.expires_at):
+                return {
+                    "authenticated": True,
+                    "configured": True,
+                    "session_id": session.id,
+                    "user_id": session.user_id,
+                    "user_name": session.user_name,
+                    "email": session.email,
+                    "expires_at": session.expires_at.isoformat()
+                }
+
+    current_settings = settings
+    if not current_settings.UPSTOX_CLIENT_ID or current_settings.UPSTOX_CLIENT_ID.startswith("paste_"):
+        current_settings = reload_settings()
+
+    oauth_configured = bool(
+        current_settings.UPSTOX_CLIENT_ID and 
+        not current_settings.UPSTOX_CLIENT_ID.startswith("paste_") and 
+        current_settings.UPSTOX_CLIENT_SECRET and 
+        not current_settings.UPSTOX_CLIENT_SECRET.startswith("paste_")
+    )
     return {
         "authenticated": False,
-        "configured": True,
-        "message": "Not authenticated. Please sign in with username and password."
+        "configured": oauth_configured,
+        "message": "Not authenticated. Paste your Upstox access token or connect via OAuth."
     }
 
 @router.post("/logout")
-def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+async def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     """
-    Logs out the current session and clears the session cookie.
+    Logs out the current session, calls Upstox logout API, and clears the session cookie.
     """
     try:
         session = get_current_session(request, db)
+        token = get_active_access_token(session)
+        # Attempt Upstox API logout
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.delete(
+                    UPSTOX_LOGOUT_URL,
+                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"}
+                )
+        except Exception:
+            pass
+
         session.is_active = False
         db.commit()
     except HTTPException:
