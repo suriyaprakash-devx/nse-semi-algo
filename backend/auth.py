@@ -67,24 +67,21 @@ def get_current_session(
         # Also check query param if testing
         session_id = request.query_params.get("session_id")
 
-    # If no session specified, pick latest active session (useful for single-user semi-algo deployment)
-    session = None
-    if session_id:
-        session = db.query(OAuthSession).filter(
-            OAuthSession.id == session_id,
-            OAuthSession.is_active == True
-        ).first()
+    if not session_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Please provide your Upstox access token."
+        )
 
-    if not session:
-        # Fallback to the most recent active session in the database
-        session = db.query(OAuthSession).filter(
-            OAuthSession.is_active == True
-        ).order_by(OAuthSession.created_at.desc()).first()
+    session = db.query(OAuthSession).filter(
+        OAuthSession.id == session_id,
+        OAuthSession.is_active == True
+    ).first()
 
     if not session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Upstox authentication expired or not connected. Please connect your Upstox account."
+            detail="Session not found or inactive. Please login with your Upstox access token."
         )
 
     # Check if expired
@@ -218,8 +215,11 @@ async def oauth_callback(
     # Encrypt access token before persistent storage
     encrypted_token = encrypt_token(access_token)
 
-    # Invalidate previous active sessions for this user (or all if single-algo deployment)
-    db.query(OAuthSession).filter(OAuthSession.is_active == True).update({"is_active": False})
+    # Invalidate previous active sessions for this specific user
+    db.query(OAuthSession).filter(
+        OAuthSession.user_id == user_id,
+        OAuthSession.is_active == True
+    ).update({"is_active": False})
 
     # Upstox access tokens are valid for 1 day (or until 3:30 AM IST next day)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
@@ -314,8 +314,11 @@ async def save_direct_token(
     # Encrypt access token before storing in database
     encrypted_token = encrypt_token(raw_token)
 
-    # Invalidate previous active sessions
-    db.query(OAuthSession).filter(OAuthSession.is_active == True).update({"is_active": False})
+    # Invalidate previous active sessions for this specific user
+    db.query(OAuthSession).filter(
+        OAuthSession.user_id == user_id,
+        OAuthSession.is_active == True
+    ).update({"is_active": False})
 
     # Set expiry to 24 hours from now
     expires_at = datetime.now(timezone.utc) + timedelta(hours=24)

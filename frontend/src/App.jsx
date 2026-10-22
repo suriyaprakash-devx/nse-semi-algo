@@ -40,6 +40,39 @@ const API_BASE = RAW_API_URL
   ? (RAW_API_URL.startsWith('http') ? RAW_API_URL : `https://${RAW_API_URL}`).replace(/\/+$/, '')
   : ''
 
+const SESSION_STORAGE_KEY = 'upstox_session_id'
+
+export const getSessionId = () => {
+  try {
+    return localStorage.getItem(SESSION_STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+export const setStoredSessionId = (id) => {
+  try {
+    if (id) {
+      localStorage.setItem(SESSION_STORAGE_KEY, id)
+    } else {
+      localStorage.removeItem(SESSION_STORAGE_KEY)
+    }
+  } catch {}
+}
+
+export const authFetch = (url, options = {}) => {
+  const sessionId = getSessionId()
+  const headers = {
+    ...(options.headers || {}),
+    ...(sessionId ? { 'X-Session-ID': sessionId, 'Authorization': `Bearer ${sessionId}` } : {})
+  }
+  return fetch(url, {
+    ...options,
+    credentials: 'include',
+    headers
+  })
+}
+
 export default function App() {
   // Theme state: 'dark' (Black Obsidian Glass) vs 'light' (White Crystal Glass)
   const [theme, setTheme] = useState(() => {
@@ -129,25 +162,40 @@ export default function App() {
   // 1. Check Authentication Status on mount
   const checkAuth = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/auth/status`)
+      const res = await authFetch(`${API_BASE}/api/auth/status`)
       if (!res.ok) {
+        setStoredSessionId(null)
         setAuthStatus(prev => ({ ...prev, loading: false, authenticated: false }))
         return
       }
       const data = await res.json()
-      setAuthStatus({
-        loading: false,
-        authenticated: data.authenticated,
-        configured: data.configured !== false,
-        user_id: data.user_id,
-        user_name: data.user_name,
-        message: data.message
-      })
       if (data.authenticated) {
+        if (data.session_id) setStoredSessionId(data.session_id)
+        setAuthStatus({
+          loading: false,
+          authenticated: true,
+          configured: data.configured !== false,
+          user_id: data.user_id,
+          user_name: data.user_name,
+          email: data.email,
+          broker: data.broker,
+          expires_at: data.expires_at,
+          message: data.message
+        })
         fetchResults()
         loadStockAnalysis('RELIANCE')
         loadStockPerfection('RELIANCE')
         loadLeaderboard()
+      } else {
+        setStoredSessionId(null)
+        setAuthStatus({
+          loading: false,
+          authenticated: false,
+          configured: data.configured !== false,
+          user_id: null,
+          user_name: null,
+          message: data.message
+        })
       }
     } catch (err) {
       console.error('Failed to fetch auth status:', err)
@@ -163,8 +211,12 @@ export default function App() {
   }
 
   useEffect(() => {
-    // Handle URL search params
+    // Handle URL search params (OAuth callback redirect)
     const params = new URLSearchParams(window.location.search)
+    const urlSessionId = params.get('session_id')
+    if (urlSessionId) {
+      setStoredSessionId(urlSessionId)
+    }
     if (params.get('auth') === 'success') {
       window.history.replaceState({}, document.title, window.location.pathname)
     }
@@ -181,9 +233,10 @@ export default function App() {
   const fetchResults = async () => {
     setIsRefreshing(true)
     try {
-      const res = await fetch(`${API_BASE}/api/scanner/results`)
+      const res = await authFetch(`${API_BASE}/api/scanner/results`)
       if (res.status === 401) {
-        setAuthStatus(prev => ({ ...prev, authenticated: false, message: 'Upstox authentication expired.' }))
+        setStoredSessionId(null)
+        setAuthStatus(prev => ({ ...prev, authenticated: false, message: 'Upstox authentication expired. Please re-enter your access token.' }))
         return
       }
       if (!res.ok) return
@@ -205,7 +258,7 @@ export default function App() {
     if (scanStatus.is_running) {
       intervalId = setInterval(async () => {
         try {
-          const res = await fetch(`${API_BASE}/api/scanner/status`)
+          const res = await authFetch(`${API_BASE}/api/scanner/status`)
           if (!res.ok) return
           const data = await res.json()
           setScanStatus(data)
@@ -229,9 +282,10 @@ export default function App() {
     setErrorMessage(null)
     setSuccessMessage(null)
     try {
-      const res = await fetch(`${API_BASE}/api/scanner/run`, { method: 'POST' })
+      const res = await authFetch(`${API_BASE}/api/scanner/run`, { method: 'POST' })
       if (res.status === 401) {
         setErrorMessage('Upstox authentication expired. Please reconnect or enter your latest access token.')
+        setStoredSessionId(null)
         setAuthStatus(prev => ({ ...prev, authenticated: false }))
         return
       }
@@ -265,7 +319,7 @@ export default function App() {
   // Trigger Scanner Stop
   const handleStopScanner = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/scanner/stop`, { method: 'POST' })
+      const res = await authFetch(`${API_BASE}/api/scanner/stop`, { method: 'POST' })
       if (res.ok) {
         setSuccessMessage('Scan abort initiated.')
       } else {
@@ -280,10 +334,13 @@ export default function App() {
 
   // 5. Connect via Direct Access Token
   const handleConnectWithToken = async (tokenString) => {
-    const token = (tokenString || directToken).trim()
+    let token = (tokenString || directToken).trim()
     if (!token) {
       setErrorMessage('Please paste your Upstox access token.')
       return
+    }
+    if (token.toLowerCase().startsWith('bearer ')) {
+      token = token.slice(7).trim()
     }
 
     setIsSubmittingToken(true)
@@ -294,6 +351,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/auth/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ access_token: token })
       })
       let data = {}
@@ -307,18 +365,26 @@ export default function App() {
         throw new Error(data.detail || data.message || 'Failed to verify Upstox access token')
       }
 
+      // Store private session ID locally for this browser session
+      if (data.session_id) {
+        setStoredSessionId(data.session_id)
+      }
+
       setAuthStatus({
         loading: false,
         authenticated: true,
         configured: true,
         user_id: data.user_id,
         user_name: data.user_name,
+        email: data.email,
+        broker: data.broker || 'UPSTOX',
+        expires_at: data.expires_at,
         message: data.message
       })
       setDirectToken('')
       setUpdateTokenInput('')
       setShowUpdateModal(false)
-      setSuccessMessage(data.message || 'Connected to Upstox successfully!')
+      setSuccessMessage(data.message || `Connected to Upstox successfully as ${data.user_name || data.user_id}!`)
       fetchResults()
       loadStockAnalysis('RELIANCE')
       loadStockPerfection('RELIANCE')
@@ -330,17 +396,17 @@ export default function App() {
     }
   }
 
-  // Quick Demo Mode (explore Glassmorphic UI, Screener, and Perfection Scorer instantly)
+  // Quick Offline Preview Mode (explore UI without live Upstox session)
   const handleEnterDemoMode = () => {
     setAuthStatus({
       loading: false,
       authenticated: true,
       configured: true,
-      user_id: 'DEMO_TRADER',
-      user_name: 'Quant Trader (Guest Demo)',
-      message: 'Active in Glassmorphism Preview Mode'
+      user_id: 'PREVIEW_USER',
+      user_name: 'Offline Simulation Mode',
+      message: 'Active in Offline Simulation Mode'
     })
-    setSuccessMessage('Launched in Glassmorphic Demo Mode! Explore SMA Scanner, Screener Analysis, and Stock Perfection Score.')
+    setSuccessMessage('Launched in Offline Simulation Mode with cached NSE data.')
     fetchResults()
     loadStockAnalysis('RELIANCE')
     loadStockPerfection('RELIANCE')
@@ -350,7 +416,7 @@ export default function App() {
   // 6. Upstox OAuth Login Flow (Alternative)
   const handleConnectUpstoxOAuth = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/auth/login`)
+      const res = await authFetch(`${API_BASE}/api/auth/login`)
       const data = await res.json()
       if (!res.ok) {
         setErrorMessage(data.detail || `Server error (${res.status})`)
@@ -369,10 +435,11 @@ export default function App() {
   // 7. Logout
   const handleLogout = async () => {
     try {
-      await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' })
+      await authFetch(`${API_BASE}/api/auth/logout`, { method: 'POST' })
     } catch (err) {
       console.warn('Logout error:', err)
     } finally {
+      setStoredSessionId(null)
       setAuthStatus({
         loading: false,
         authenticated: false,
@@ -395,7 +462,7 @@ export default function App() {
     setScreenerInput(sym)
 
     try {
-      const res = await fetch(`${API_BASE}/api/analysis/${encodeURIComponent(sym)}`)
+      const res = await authFetch(`${API_BASE}/api/analysis/${encodeURIComponent(sym)}`)
       if (!res.ok) {
         let errDetail = 'Unable to fetch fundamental data'
         try {
@@ -431,7 +498,7 @@ export default function App() {
     setScorerInput(sym)
 
     try {
-      const res = await fetch(`${API_BASE}/api/analysis/${encodeURIComponent(sym)}`)
+      const res = await authFetch(`${API_BASE}/api/analysis/${encodeURIComponent(sym)}`)
       if (!res.ok) {
         let errDetail = 'Unable to compute stock perfection score'
         try {
@@ -455,7 +522,7 @@ export default function App() {
   const loadLeaderboard = async () => {
     setLeaderboardLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/scoring/leaderboard`)
+      const res = await authFetch(`${API_BASE}/api/scoring/leaderboard`)
       if (res.ok) {
         const data = await res.json()
         if (data && data.leaderboard) {
@@ -645,7 +712,7 @@ export default function App() {
           <div className="login-card glass-panel">
             <div className="login-badge">
               <Key size={14} />
-              <span>Upstox v2 API Direct Token & OAuth Gateway</span>
+              <span>Upstox API v2 Direct Authentication Gateway</span>
             </div>
 
             <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1.2 }}>
@@ -653,7 +720,7 @@ export default function App() {
             </h1>
 
             <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', maxWidth: '440px', lineHeight: 1.5 }}>
-              Precision SMA 6 & 30 crossover signals for NIFTY 100/200 equities with real-time intraday tick integration and fundamental double confirmation.
+              Precision SMA 6 & 30 crossover signals for NIFTY 100/200 equities. Connect with your Upstox Daily Access Token for live market streams and real-time execution support.
             </p>
 
             {errorMessage && (
@@ -670,20 +737,41 @@ export default function App() {
                 onClick={() => setAuthTab('token')}
               >
                 <Key size={15} />
-                <span>Paste Daily Access Token</span>
+                <span>Daily Access Token</span>
               </button>
               <button
                 className={`auth-tab-btn ${authTab === 'oauth' ? 'active' : ''}`}
                 onClick={() => setAuthTab('oauth')}
               >
                 <Shield size={15} />
-                <span>OAuth 2.0 Dialog</span>
+                <span>Upstox SSO / OAuth</span>
               </button>
             </div>
 
             {/* Method 1: Direct Token Input */}
             {authTab === 'token' && (
               <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {/* 3-Step Quick Guide */}
+                <div style={{
+                  padding: '12px 14px',
+                  borderRadius: '8px',
+                  background: 'rgba(0, 210, 255, 0.05)',
+                  border: '1px solid rgba(0, 210, 255, 0.15)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                  fontSize: '0.78rem',
+                  color: 'var(--text-muted)'
+                }}>
+                  <div style={{ fontWeight: 700, color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Sparkles size={13} />
+                    <span>How to get your Upstox Access Token:</span>
+                  </div>
+                  <div>1. Go to <a href="https://developer.upstox.com/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-cyan)', textDecoration: 'underline' }}>developer.upstox.com</a> and open your App.</div>
+                  <div>2. Click <strong>Generate Token</strong> / copy today's active 24-hr Access Token.</div>
+                  <div>3. Paste token below and click <strong>Log In to Terminal</strong>.</div>
+                </div>
+
                 <div className="token-input-container">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 600 }}>
                     <span>PASTE UPSTOX ACCESS TOKEN</span>
@@ -693,7 +781,7 @@ export default function App() {
                       rel="noopener noreferrer"
                       style={{ color: 'var(--accent-cyan)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}
                     >
-                      <span>Upstox Developer Portal</span>
+                      <span>Developer Console</span>
                       <ExternalLink size={12} />
                     </a>
                   </div>
@@ -702,7 +790,7 @@ export default function App() {
                       id="input-access-token"
                       type={showToken ? 'text' : 'password'}
                       className="token-input"
-                      placeholder="Paste token (e.g. eyJhbGciOi...)"
+                      placeholder="Paste your Upstox access token (eyJhbGci...)"
                       value={directToken}
                       onChange={(e) => setDirectToken(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleConnectWithToken()}
@@ -717,7 +805,7 @@ export default function App() {
                     </button>
                   </div>
                   <span style={{ fontSize: '0.72rem', color: 'var(--text-faint)' }}>
-                    Verified instantly against Upstox profile endpoint and encrypted for the current session.
+                    Tokens are cryptographically encrypted per browser session and never shared with other users.
                   </span>
                 </div>
 
@@ -735,7 +823,7 @@ export default function App() {
                     </>
                   ) : (
                     <>
-                      <span>Connect Terminal Session</span>
+                      <span>Log In to Terminal Session</span>
                       <ChevronRight size={18} />
                     </>
                   )}
@@ -749,7 +837,7 @@ export default function App() {
                 {!authStatus.configured && (
                   <div className="alert-box alert-warning" style={{ width: '100%' }}>
                     <AlertCircle size={18} />
-                    <span>Client ID/Secret not set in environment. Use the <strong>Paste Access Token</strong> tab.</span>
+                    <span>Client ID/Secret not set in environment. Use the <strong>Daily Access Token</strong> tab.</span>
                   </div>
                 )}
                 <button
@@ -765,11 +853,11 @@ export default function App() {
               </div>
             )}
 
-            {/* Quick Preview / Demo Mode */}
+            {/* Offline Simulation / Preview Mode */}
             <div style={{ width: '100%', marginTop: '4px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '8px 0', gap: '8px' }}>
                 <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-glass-card)' }} />
-                <span style={{ fontSize: '0.70rem', color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>or instant preview</span>
+                <span style={{ fontSize: '0.70rem', color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>or offline simulation</span>
                 <div style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-glass-card)' }} />
               </div>
               <button
@@ -778,8 +866,8 @@ export default function App() {
                 className="btn btn-secondary"
                 style={{
                   width: '100%',
-                  padding: '11px',
-                  fontSize: '0.86rem',
+                  padding: '10px',
+                  fontSize: '0.84rem',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -789,8 +877,8 @@ export default function App() {
                 }}
                 onClick={handleEnterDemoMode}
               >
-                <Sparkles size={16} style={{ color: 'var(--accent-cyan)' }} />
-                <span>Launch in Glassmorphic Demo Mode</span>
+                <Sparkles size={15} style={{ color: 'var(--accent-cyan)' }} />
+                <span>Explore in Offline Simulation Mode (Historical Cache)</span>
               </button>
             </div>
 

@@ -680,7 +680,13 @@ export default function AlgoSignals({ apiBase = '', initialSymbol = 'RELIANCE' }
 
     try {
       const url = `${apiBase}/api/algo/swing-analysis?symbol=${encodeURIComponent(cleanSym)}${forceRefresh ? '&refresh=true' : ''}`
-      const res = await fetch(url)
+      const sessionId = (function() {
+        try { return localStorage.getItem('upstox_session_id') || '' } catch { return '' }
+      })()
+      const res = await fetch(url, {
+        credentials: 'include',
+        headers: sessionId ? { 'X-Session-ID': sessionId, 'Authorization': `Bearer ${sessionId}` } : {}
+      })
       if (!res.ok) {
         let errDetail = 'Failed to execute AI Swing Analysis'
         try {
